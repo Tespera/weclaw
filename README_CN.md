@@ -275,6 +275,16 @@ go build -o weclaw .
 ./weclaw start
 ```
 
+## 贡献者
+
+<a href="https://github.com/fastclaw-ai/weclaw/graphs/contributors">
+  <img src="https://contrib.rocks/image?repo=fastclaw-ai/weclaw" />
+</a>
+
+## Star 趋势
+
+[![Star History Chart](https://api.star-history.com/svg?repos=fastclaw-ai/weclaw&type=Timeline)](https://star-history.com/#fastclaw-ai/weclaw&Timeline)
+
 ## 许可证
 
 [MIT](LICENSE)

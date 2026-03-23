@@ -180,15 +180,19 @@ Example:
   "claude": {
     "type": "cli",
     "command": "/usr/local/bin/claude",
+    "cwd": "/home/user/my-project",
     "args": ["--dangerously-skip-permissions"]
   },
   "codex": {
     "type": "cli",
     "command": "/usr/local/bin/codex",
+    "cwd": "/home/user/my-project",
     "args": ["--skip-git-repo-check"]
   }
 }
 ```
+
+Set `cwd` to specify the agent's working directory (workspace). If omitted, defaults to the current working directory.
 
 > **Warning:** These flags disable safety checks. Only enable them if you understand the risks. ACP agents handle permissions automatically and don't need these flags.
 
@@ -272,6 +276,16 @@ go build -o weclaw .
 # Run
 ./weclaw start
 ```
+
+## Contributors
+
+<a href="https://github.com/fastclaw-ai/weclaw/graphs/contributors">
+  <img src="https://contrib.rocks/image?repo=fastclaw-ai/weclaw" />
+</a>
+
+## Star History
+
+[![Star History Chart](https://api.star-history.com/svg?repos=fastclaw-ai/weclaw&type=Timeline)](https://star-history.com/#fastclaw-ai/weclaw&Timeline)
 
 ## License
 
