@@ -35,11 +35,15 @@ type CLIAgentConfig struct {
 
 // NewCLIAgent creates a new CLI agent.
 func NewCLIAgent(cfg CLIAgentConfig) *CLIAgent {
+	cwd := cfg.Cwd
+	if cwd == "" {
+		cwd = defaultWorkspace()
+	}
 	return &CLIAgent{
 		name:         cfg.Name,
 		command:      cfg.Command,
 		args:         cfg.Args,
-		cwd:          cfg.Cwd,
+		cwd:          cwd,
 		model:        cfg.Model,
 		systemPrompt: cfg.SystemPrompt,
 		sessions:     make(map[string]string),

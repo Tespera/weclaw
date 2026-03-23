@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"log"
-	"os"
 	"os/exec"
 	"strings"
 	"sync"
@@ -143,11 +142,7 @@ func NewACPAgent(cfg ACPAgentConfig) *ACPAgent {
 		cfg.Command = "claude-agent-acp"
 	}
 	if cfg.Cwd == "" {
-		if wd, err := os.Getwd(); err == nil {
-			cfg.Cwd = wd
-		} else {
-			cfg.Cwd = os.TempDir()
-		}
+		cfg.Cwd = defaultWorkspace()
 	}
 	return &ACPAgent{
 		command:      cfg.Command,

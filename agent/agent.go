@@ -3,6 +3,8 @@ package agent
 import (
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
 )
 
 // AgentInfo holds metadata about an agent for logging/debugging.
@@ -21,6 +23,17 @@ func (i AgentInfo) String() string {
 		s += fmt.Sprintf(", pid=%d", i.PID)
 	}
 	return s
+}
+
+// defaultWorkspace returns ~/.weclaw/workspace as the default working directory.
+func defaultWorkspace() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return os.TempDir()
+	}
+	dir := filepath.Join(home, ".weclaw", "workspace")
+	os.MkdirAll(dir, 0o755)
+	return dir
 }
 
 // Agent is the interface for AI chat agents.

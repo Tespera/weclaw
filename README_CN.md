@@ -194,7 +194,7 @@ curl -X POST http://127.0.0.1:18011/api/send \
 }
 ```
 
-通过 `cwd` 指定 Agent 的工作目录（workspace）。不设置则默认使用当前工作目录。
+通过 `cwd` 指定 Agent 的工作目录（workspace）。不设置则默认为 `~/.weclaw/workspace`。
 
 > **注意：** 这些参数会跳过安全检查，请了解风险后再启用。ACP 模式的 Agent 会自动处理权限，无需配置。
 

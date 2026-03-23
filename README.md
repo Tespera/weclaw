@@ -192,7 +192,7 @@ Example:
 }
 ```
 
-Set `cwd` to specify the agent's working directory (workspace). If omitted, defaults to the current working directory.
+Set `cwd` to specify the agent's working directory (workspace). If omitted, defaults to `~/.weclaw/workspace`.
 
 > **Warning:** These flags disable safety checks. Only enable them if you understand the risks. ACP agents handle permissions automatically and don't need these flags.
 
