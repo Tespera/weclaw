@@ -223,6 +223,7 @@ func createAgentByName(ctx context.Context, cfg *config.Config, name string) age
 		ag := agent.NewACPAgent(agent.ACPAgentConfig{
 			Command:      agCfg.Command,
 			Args:         agCfg.Args,
+			Cwd:          agCfg.Cwd,
 			Model:        agCfg.Model,
 			SystemPrompt: agCfg.SystemPrompt,
 		})
@@ -237,6 +238,7 @@ func createAgentByName(ctx context.Context, cfg *config.Config, name string) age
 			Name:         name,
 			Command:      agCfg.Command,
 			Args:         agCfg.Args,
+			Cwd:          agCfg.Cwd,
 			Model:        agCfg.Model,
 			SystemPrompt: agCfg.SystemPrompt,
 		})

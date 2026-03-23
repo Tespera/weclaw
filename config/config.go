@@ -19,6 +19,7 @@ type AgentConfig struct {
 	Type         string   `json:"type"`                    // "acp", "cli", or "http"
 	Command      string   `json:"command,omitempty"`        // binary path (cli/acp type)
 	Args         []string `json:"args,omitempty"`           // extra args for command (e.g. ["acp"] for cursor)
+	Cwd          string   `json:"cwd,omitempty"`            // working directory (workspace)
 	Model        string   `json:"model,omitempty"`          // model name
 	SystemPrompt string   `json:"system_prompt,omitempty"`  // system prompt
 	Endpoint     string   `json:"endpoint,omitempty"`       // API endpoint (http type)

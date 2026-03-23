@@ -16,6 +16,7 @@ type CLIAgent struct {
 	name         string
 	command      string
 	args         []string // extra args from config
+	cwd          string   // working directory
 	model        string
 	systemPrompt string
 	mu           sync.Mutex
@@ -27,6 +28,7 @@ type CLIAgentConfig struct {
 	Name         string   // agent name for logging, e.g. "claude", "codex"
 	Command      string   // path to binary
 	Args         []string // extra args (e.g. ["--dangerously-skip-permissions"])
+	Cwd          string   // working directory (workspace)
 	Model        string
 	SystemPrompt string
 }
@@ -37,6 +39,7 @@ func NewCLIAgent(cfg CLIAgentConfig) *CLIAgent {
 		name:         cfg.Name,
 		command:      cfg.Command,
 		args:         cfg.Args,
+		cwd:          cfg.Cwd,
 		model:        cfg.Model,
 		systemPrompt: cfg.SystemPrompt,
 		sessions:     make(map[string]string),
@@ -97,6 +100,9 @@ func (a *CLIAgent) chatClaude(ctx context.Context, conversationID string, messag
 	}
 
 	cmd := exec.CommandContext(ctx, a.command, args...)
+	if a.cwd != "" {
+		cmd.Dir = a.cwd
+	}
 	var stderr strings.Builder
 	cmd.Stderr = &stderr
 
@@ -183,6 +189,9 @@ func (a *CLIAgent) chatCodex(ctx context.Context, message string) (string, error
 
 	log.Printf("[cli] running codex exec (command=%s)", a.command)
 	cmd := exec.CommandContext(ctx, a.command, args...)
+	if a.cwd != "" {
+		cmd.Dir = a.cwd
+	}
 	var stderr strings.Builder
 	cmd.Stderr = &stderr
 
