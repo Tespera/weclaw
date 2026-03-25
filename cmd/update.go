@@ -85,6 +85,12 @@ func runUpdate(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("replace binary: %w", err)
 	}
 
+	// Clear macOS quarantine/provenance attributes to avoid Gatekeeper killing the binary
+	if runtime.GOOS == "darwin" {
+		exec.Command("xattr", "-d", "com.apple.quarantine", exePath).Run()
+		exec.Command("xattr", "-d", "com.apple.provenance", exePath).Run()
+	}
+
 	fmt.Printf("Updated to %s\n", latest)
 
 	// 4. Restart if running in background

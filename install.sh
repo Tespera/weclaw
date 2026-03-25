@@ -51,6 +51,12 @@ else
   sudo mv "$TMP" "${INSTALL_DIR}/${BINARY}"
 fi
 
+# Clear macOS quarantine attributes
+if [ "$OS" = "darwin" ]; then
+  xattr -d com.apple.quarantine "${INSTALL_DIR}/${BINARY}" 2>/dev/null || true
+  xattr -d com.apple.provenance "${INSTALL_DIR}/${BINARY}" 2>/dev/null || true
+fi
+
 echo ""
 echo "weclaw ${VERSION} installed to ${INSTALL_DIR}/${BINARY}"
 echo ""
