@@ -368,7 +368,7 @@ func runDaemon() error {
 	cmd := exec.Command(exe, "start", "-f")
 	cmd.Stdout = lf
 	cmd.Stderr = lf
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	setSysProcAttr(cmd)
 
 	if err := cmd.Start(); err != nil {
 		lf.Close()
