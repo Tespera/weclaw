@@ -168,19 +168,19 @@ func (h *Handler) resolveAlias(name string) string {
 	return name
 }
 
-// parseCommand checks if text starts with "/agentname " and returns (agentName, actualMessage).
-// Aliases are resolved automatically (e.g. "/cc" -> "claude").
+// parseCommand checks if text starts with "/" or "@" followed by an agent name.
+// Returns (agentName, actualMessage). Aliases are resolved automatically.
 // If no command prefix, returns ("", originalText).
 func (h *Handler) parseCommand(text string) (string, string) {
-	if !strings.HasPrefix(text, "/") {
+	if !strings.HasPrefix(text, "/") && !strings.HasPrefix(text, "@") {
 		return "", text
 	}
 
-	// Find the first space: "/codex hello world" -> "codex", "hello world"
-	rest := text[1:] // strip leading "/"
+	// Strip leading "/" or "@"
+	rest := text[1:]
 	idx := strings.IndexByte(rest, ' ')
 	if idx <= 0 {
-		// Just "/codex" with no message — treat as empty command
+		// Just "/codex" or "@codex" with no message
 		return h.resolveAlias(rest), ""
 	}
 
