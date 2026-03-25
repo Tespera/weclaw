@@ -378,10 +378,15 @@ func (h *Handler) handleCwd(trimmed string) string {
 	}
 
 	// Expand ~ to home directory
-	if strings.HasPrefix(arg, "~") {
+	if arg == "~" {
 		home, err := os.UserHomeDir()
 		if err == nil {
-			arg = filepath.Join(home, arg[1:])
+			arg = home
+		}
+	} else if strings.HasPrefix(arg, "~/") {
+		home, err := os.UserHomeDir()
+		if err == nil {
+			arg = filepath.Join(home, arg[2:])
 		}
 	}
 
