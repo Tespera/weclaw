@@ -83,6 +83,13 @@ func (a *CLIAgent) ResetSession(_ context.Context, conversationID string) (strin
 	return "", nil
 }
 
+// SetCwd changes the working directory for subsequent CLI invocations.
+func (a *CLIAgent) SetCwd(cwd string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.cwd = cwd
+}
+
 // Chat sends a message to the CLI agent and returns the response.
 func (a *CLIAgent) Chat(ctx context.Context, conversationID string, message string) (string, error) {
 	switch a.name {

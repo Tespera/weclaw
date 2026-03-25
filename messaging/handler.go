@@ -224,6 +224,12 @@ func (h *Handler) HandleMessage(ctx context.Context, client *ilink.Client, msg i
 			log.Printf("[handler] failed to send reply to %s: %v", msg.FromUserID, err)
 		}
 		return
+	} else if strings.HasPrefix(trimmed, "/cwd") {
+		reply := h.handleCwd(trimmed)
+		if err := SendTextReply(ctx, client, msg.FromUserID, reply, msg.ContextToken, clientID); err != nil {
+			log.Printf("[handler] failed to send reply to %s: %v", msg.FromUserID, err)
+		}
+		return
 	}
 
 	// Route: "/agentname message" -> specific agent, otherwise -> default
@@ -358,6 +364,58 @@ func (h *Handler) resetDefaultSession(ctx context.Context, userID string) string
 	return fmt.Sprintf("已创建新的%s会话", name)
 }
 
+// handleCwd handles the /cwd command. It updates the working directory for all running agents.
+func (h *Handler) handleCwd(trimmed string) string {
+	arg := strings.TrimSpace(strings.TrimPrefix(trimmed, "/cwd"))
+	if arg == "" {
+		// No path provided — show current cwd of default agent
+		ag := h.getDefaultAgent()
+		if ag == nil {
+			return "No agent running."
+		}
+		info := ag.Info()
+		return fmt.Sprintf("cwd: (check agent config)\nagent: %s", info.Name)
+	}
+
+	// Expand ~ to home directory
+	if strings.HasPrefix(arg, "~") {
+		home, err := os.UserHomeDir()
+		if err == nil {
+			arg = filepath.Join(home, arg[1:])
+		}
+	}
+
+	// Resolve to absolute path
+	absPath, err := filepath.Abs(arg)
+	if err != nil {
+		return fmt.Sprintf("Invalid path: %v", err)
+	}
+
+	// Verify directory exists
+	info, err := os.Stat(absPath)
+	if err != nil {
+		return fmt.Sprintf("Path not found: %s", absPath)
+	}
+	if !info.IsDir() {
+		return fmt.Sprintf("Not a directory: %s", absPath)
+	}
+
+	// Update cwd on all running agents
+	h.mu.RLock()
+	agents := make(map[string]agent.Agent, len(h.agents))
+	for name, ag := range h.agents {
+		agents[name] = ag
+	}
+	h.mu.RUnlock()
+
+	for name, ag := range agents {
+		ag.SetCwd(absPath)
+		log.Printf("[handler] updated cwd for agent %s: %s", name, absPath)
+	}
+
+	return fmt.Sprintf("cwd: %s", absPath)
+}
+
 // buildStatus returns a short status string showing the current default agent.
 func (h *Handler) buildStatus() string {
 	h.mu.RLock()
@@ -381,6 +439,7 @@ func buildHelpText() string {
 /agentname - Switch default agent
 /agentname message - Send message to a specific agent
 /new or /clear - Start a new session (clears conversation history)
+/cwd /path/to/project - Switch workspace directory
 /status - Show current agent info
 /help - Show this help message
 

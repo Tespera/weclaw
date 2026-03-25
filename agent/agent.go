@@ -89,4 +89,7 @@ type Agent interface {
 
 	// Info returns metadata about this agent.
 	Info() AgentInfo
+
+	// SetCwd changes the working directory for subsequent operations.
+	SetCwd(cwd string)
 }
