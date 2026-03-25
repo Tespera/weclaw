@@ -82,38 +82,58 @@ func DetectAndConfigure(cfg *Config) bool {
 		modified = true
 	}
 
-	// Special handling for openclaw: resolve gateway connection from
-	// env vars -> ~/.openclaw/openclaw.json -> skip.
+	// Special handling for openclaw: prefer HTTP mode over ACP to avoid
+	// session routing conflicts with openclaw-weixin plugin (see #9).
+	// Priority: HTTP (gateway) > ACP (with user-configured --session) > skip.
 	if agCfg, exists := cfg.Agents["openclaw"]; exists && agCfg.Type == "acp" && len(agCfg.Args) == 0 {
 		gwURL, gwToken, gwPassword := loadOpenclawGateway()
 		if gwURL != "" {
-			args := []string{"acp", "--url", gwURL, "--session", "agent:main:main"}
-			if gwToken != "" {
-				args = append(args, "--token", gwToken)
-			} else if gwPassword != "" {
-				args = append(args, "--password", gwPassword)
+			// Prefer HTTP mode — no session routing issues
+			httpURL := gwURL
+			httpURL = strings.Replace(httpURL, "wss://", "https://", 1)
+			httpURL = strings.Replace(httpURL, "ws://", "http://", 1)
+			endpoint := strings.TrimRight(httpURL, "/") + "/v1/chat/completions"
+			log.Printf("[config] openclaw using HTTP mode: %s", endpoint)
+			cfg.Agents["openclaw"] = AgentConfig{
+				Type:     "http",
+				Endpoint: endpoint,
+				APIKey:   gwToken,
+				Model:    "openclaw:main",
 			}
-			agCfg.Args = args
-			cfg.Agents["openclaw"] = agCfg
 			modified = true
-			log.Printf("[config] openclaw ACP configured with gateway: %s", gwURL)
+
+			// Also register openclaw-acp as a separate agent for users who want ACP
+			if _, apcExists := cfg.Agents["openclaw-acp"]; !apcExists {
+				args := []string{"acp", "--url", gwURL}
+				if gwToken != "" {
+					args = append(args, "--token", gwToken)
+				} else if gwPassword != "" {
+					args = append(args, "--password", gwPassword)
+				}
+				cfg.Agents["openclaw-acp"] = AgentConfig{
+					Type:    "acp",
+					Command: agCfg.Command,
+					Args:    args,
+					Model:   "openclaw:main",
+				}
+				log.Printf("[config] openclaw ACP also available as 'openclaw-acp' (use /openclaw-acp to switch)")
+			}
 		} else {
-			log.Printf("[config] openclaw binary found but no gateway config, skipping ACP")
+			log.Printf("[config] openclaw binary found but no gateway config, skipping")
 			delete(cfg.Agents, "openclaw")
 			modified = true
 		}
 	}
 
-	// Fallback: if openclaw not configured, try HTTP via gateway config.
+	// Fallback: if openclaw still not configured, try HTTP via gateway config.
 	if _, exists := cfg.Agents["openclaw"]; !exists {
 		gwURL, gwToken, _ := loadOpenclawGateway()
 		if gwURL != "" {
-			// Convert ws(s):// to http(s):// for HTTP endpoint
 			httpURL := gwURL
 			httpURL = strings.Replace(httpURL, "wss://", "https://", 1)
 			httpURL = strings.Replace(httpURL, "ws://", "http://", 1)
 			endpoint := strings.TrimRight(httpURL, "/") + "/v1/chat/completions"
-			log.Printf("[config] using openclaw HTTP fallback: %s", endpoint)
+			log.Printf("[config] using openclaw HTTP: %s", endpoint)
 			cfg.Agents["openclaw"] = AgentConfig{
 				Type:     "http",
 				Endpoint: endpoint,
