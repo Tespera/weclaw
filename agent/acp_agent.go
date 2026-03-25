@@ -730,8 +730,11 @@ func (a *ACPAgent) handleSessionUpdate(params json.RawMessage) {
 		return
 	}
 
-	// Only log non-streaming events (skip agent_message_chunk to reduce noise)
-	if p.Update.SessionUpdate != "agent_message_chunk" {
+	// Only log non-streaming events (skip chunks to reduce noise)
+	switch p.Update.SessionUpdate {
+	case "agent_message_chunk", "agent_thought_chunk":
+		// skip — too noisy
+	default:
 		log.Printf("[acp] session/update (session=%s, type=%s)", p.SessionID, p.Update.SessionUpdate)
 	}
 
