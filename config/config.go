@@ -3,6 +3,7 @@ package config
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 )
@@ -31,13 +32,34 @@ type AgentConfig struct {
 }
 
 // BuildAliasMap builds a map from custom alias to agent name from all agent configs.
+// It logs warnings for conflicts: duplicate aliases and aliases shadowing agent keys.
 func BuildAliasMap(agents map[string]AgentConfig) map[string]string {
+	// Built-in commands that cannot be overridden
+	reserved := map[string]bool{
+		"info": true, "help": true, "new": true, "clear": true, "cwd": true,
+	}
+
 	m := make(map[string]string)
 	for name, cfg := range agents {
 		for _, alias := range cfg.Aliases {
+			if reserved[alias] {
+				log.Printf("[config] WARNING: alias %q for agent %q conflicts with built-in command, ignored", alias, name)
+				continue
+			}
+			if existing, ok := m[alias]; ok {
+				log.Printf("[config] WARNING: alias %q is defined by both %q and %q, using %q", alias, existing, name, name)
+			}
 			m[alias] = name
 		}
 	}
+
+	// Warn if a custom alias shadows an agent key
+	for alias, target := range m {
+		if _, isAgent := agents[alias]; isAgent && alias != target {
+			log.Printf("[config] WARNING: alias %q (-> %q) shadows agent key %q", alias, target, alias)
+		}
+	}
+
 	return m
 }
 
