@@ -81,6 +81,21 @@ Send these as WeChat messages:
 | `/ocd` | opencode |
 | `/oc` | openclaw |
 
+You can also define custom aliases per agent in config:
+
+```json
+{
+  "agents": {
+    "claude": {
+      "type": "acp",
+      "aliases": ["ai", "c"]
+    }
+  }
+}
+```
+
+Then `/ai hello` or `/c hello` will route to claude.
+
 Switching default agent is persisted to config — survives restarts.
 
 ## Media Messages

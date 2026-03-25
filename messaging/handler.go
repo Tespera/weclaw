@@ -35,6 +35,7 @@ type Handler struct {
 	defaultName   string
 	agents        map[string]agent.Agent // name -> running agent
 	agentMetas    []AgentMeta            // all configured agents (for /status)
+	customAliases map[string]string      // custom alias -> agent name (from config)
 	factory       AgentFactory
 	saveDefault   SaveDefaultFunc
 	contextTokens sync.Map   // map[userID]contextToken
@@ -53,6 +54,13 @@ func NewHandler(factory AgentFactory, saveDefault SaveDefaultFunc) *Handler {
 // SetSaveDir sets the directory for saving images and files.
 func (h *Handler) SetSaveDir(dir string) {
 	h.saveDir = dir
+}
+
+// SetCustomAliases sets custom alias mappings from config.
+func (h *Handler) SetCustomAliases(aliases map[string]string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.customAliases = aliases
 }
 
 // SetAgentMetas sets the list of all configured agents (for /status).
@@ -127,7 +135,16 @@ var agentAliases = map[string]string{
 }
 
 // resolveAlias returns the full agent name for an alias, or the original name if no alias matches.
-func resolveAlias(name string) string {
+// Checks custom aliases (from config) first, then built-in aliases.
+func (h *Handler) resolveAlias(name string) string {
+	h.mu.RLock()
+	custom := h.customAliases
+	h.mu.RUnlock()
+	if custom != nil {
+		if full, ok := custom[name]; ok {
+			return full
+		}
+	}
 	if full, ok := agentAliases[name]; ok {
 		return full
 	}
@@ -137,7 +154,7 @@ func resolveAlias(name string) string {
 // parseCommand checks if text starts with "/agentname " and returns (agentName, actualMessage).
 // Aliases are resolved automatically (e.g. "/cc" -> "claude").
 // If no command prefix, returns ("", originalText).
-func parseCommand(text string) (string, string) {
+func (h *Handler) parseCommand(text string) (string, string) {
 	if !strings.HasPrefix(text, "/") {
 		return "", text
 	}
@@ -147,10 +164,10 @@ func parseCommand(text string) (string, string) {
 	idx := strings.IndexByte(rest, ' ')
 	if idx <= 0 {
 		// Just "/codex" with no message — treat as empty command
-		return resolveAlias(rest), ""
+		return h.resolveAlias(rest), ""
 	}
 
-	name := resolveAlias(rest[:idx])
+	name := h.resolveAlias(rest[:idx])
 	return name, strings.TrimSpace(rest[idx+1:])
 }
 
@@ -233,7 +250,7 @@ func (h *Handler) HandleMessage(ctx context.Context, client *ilink.Client, msg i
 	}
 
 	// Route: "/agentname message" -> specific agent, otherwise -> default
-	agentName, message := parseCommand(text)
+	agentName, message := h.parseCommand(text)
 
 	var reply string
 	var err error

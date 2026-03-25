@@ -82,6 +82,21 @@ docker run -it -v ~/.weclaw:/root/.weclaw ghcr.io/fastclaw-ai/weclaw start
 | `/ocd` | OpenCode |
 | `/oc`  | OpenClaw |
 
+也可以在配置文件中为每个 Agent 自定义触发命令：
+
+```json
+{
+  "agents": {
+    "claude": {
+      "type": "acp",
+      "aliases": ["ai", "c"]
+    }
+  }
+}
+```
+
+然后 `/ai 你好` 或 `/c 你好` 就会路由到 claude。
+
 切换默认 Agent 会写入配置文件，重启后仍然生效。
 
 ## 富媒体消息
