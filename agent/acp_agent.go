@@ -541,14 +541,9 @@ func (a *ACPAgent) chatCodexAppServer(ctx context.Context, conversationID string
 		a.notifyMu.Unlock()
 	}()
 
-	// Start turn
-	type turnDoneMsg struct {
-		result json.RawMessage
-		err    error
-	}
-	turnDone := make(chan turnDoneMsg, 1)
+	// Start turn (call returns quickly with turn info, actual content comes via events)
 	go func() {
-		result, err := a.call(ctx, "turn/start", codexTurnStartParams{
+		_, err := a.call(ctx, "turn/start", codexTurnStartParams{
 			ThreadID:       threadID,
 			ApprovalPolicy: "never",
 			Input:          []codexUserInput{{Type: "text", Text: message}},
@@ -556,46 +551,35 @@ func (a *ACPAgent) chatCodexAppServer(ctx context.Context, conversationID string
 			Model:          a.model,
 			Cwd:            a.cwd,
 		})
-		turnDone <- turnDoneMsg{result: result, err: err}
+		if err != nil {
+			// If call itself fails, signal via turn channel
+			turnCh <- &codexTurnEvent{Kind: "error", Text: err.Error()}
+		}
 	}()
 
-	// Collect text deltas from turn events
+	// Collect text from events until turn/completed
 	var textParts []string
 	for {
 		select {
 		case <-ctx.Done():
 			return "", ctx.Err()
 		case evt := <-turnCh:
+			if evt.Kind == "error" {
+				return "", fmt.Errorf("turn error: %s", evt.Text)
+			}
 			if evt.Delta != "" {
 				textParts = append(textParts, evt.Delta)
 			}
 			if evt.Text != "" {
 				textParts = append(textParts, evt.Text)
 			}
-		case done := <-turnDone:
-			// Drain remaining events
-			for {
-				select {
-				case evt := <-turnCh:
-					if evt.Delta != "" {
-						textParts = append(textParts, evt.Delta)
-					}
-					if evt.Text != "" {
-						textParts = append(textParts, evt.Text)
-					}
-				default:
-					goto drained
+			if evt.Kind == "completed" {
+				result := strings.TrimSpace(strings.Join(textParts, ""))
+				if result == "" {
+					return "", fmt.Errorf("agent returned empty response")
 				}
+				return result, nil
 			}
-		drained:
-			if done.err != nil {
-				return "", fmt.Errorf("turn error: %w", done.err)
-			}
-			result := strings.TrimSpace(strings.Join(textParts, ""))
-			if result == "" {
-				return "", fmt.Errorf("agent returned empty response")
-			}
-			return result, nil
 		}
 	}
 }
@@ -709,14 +693,20 @@ func (a *ACPAgent) readLoop() {
 			// Auto-allow all permissions
 			a.handlePermissionRequest(line)
 
-		// Codex app-server events
+		// Codex app-server events (multiple protocol versions)
 		case "codex/event/agent_message_delta":
 			a.handleCodexDelta(msg.Params)
+		case "item/agentMessage/delta":
+			a.handleCodexItemDelta(msg.Params)
+		case "item/started":
+			a.handleCodexItemStarted(msg.Params)
+		case "turn/started", "turn/completed":
+			a.handleCodexTurnEvent(msg.Method, msg.Params)
 		case "codex/event/agent_message", "codex/event/task_complete",
 			"codex/event/item_completed", "codex/event/token_count",
 			"item/completed", "thread/tokenUsage/updated",
 			"account/rateLimits/updated", "thread/status/changed":
-			// Known codex events we don't need to act on (turn/completed is handled as RPC response)
+			// Known events we don't need to act on
 		case "turn/approval/request":
 			a.handlePermissionRequest(line)
 
@@ -798,6 +788,90 @@ func (a *ACPAgent) handleCodexDelta(params json.RawMessage) {
 	if ok {
 		select {
 		case ch <- &codexTurnEvent{Delta: delta}:
+		default:
+		}
+	}
+}
+
+// handleCodexItemDelta handles "item/agentMessage/delta" events.
+// These contain incremental text deltas for the agent's response.
+func (a *ACPAgent) handleCodexItemDelta(params json.RawMessage) {
+	var p struct {
+		ThreadID string `json:"threadId"`
+		ItemID   string `json:"itemId"`
+		Delta    string `json:"delta"`
+	}
+	if err := json.Unmarshal(params, &p); err != nil {
+		return
+	}
+
+	if p.Delta == "" {
+		return
+	}
+
+	a.dispatchToTurnCh(p.ThreadID, &codexTurnEvent{Delta: p.Delta})
+}
+
+// handleCodexItemStarted handles "item/started" events.
+// When type=agentMessage, extracts text from content array.
+func (a *ACPAgent) handleCodexItemStarted(params json.RawMessage) {
+	var p struct {
+		ThreadID string `json:"threadId"`
+		Item     struct {
+			Type    string `json:"type"`
+			Content []struct {
+				Type string `json:"type"`
+				Text string `json:"text"`
+			} `json:"content"`
+		} `json:"item"`
+	}
+	if err := json.Unmarshal(params, &p); err != nil {
+		return
+	}
+
+	if p.Item.Type != "agentMessage" {
+		return
+	}
+
+	for _, c := range p.Item.Content {
+		if c.Type == "text" && c.Text != "" {
+			a.dispatchToTurnCh(p.ThreadID, &codexTurnEvent{Text: c.Text})
+		}
+	}
+}
+
+// handleCodexTurnEvent handles "turn/started" and "turn/completed" notifications.
+func (a *ACPAgent) handleCodexTurnEvent(method string, params json.RawMessage) {
+	var p struct {
+		ThreadID string `json:"threadId"`
+		Status   string `json:"status"`
+	}
+	if err := json.Unmarshal(params, &p); err != nil {
+		return
+	}
+
+	if method == "turn/completed" {
+		a.dispatchToTurnCh(p.ThreadID, &codexTurnEvent{Kind: "completed"})
+	}
+}
+
+// dispatchToTurnCh sends an event to the turn channel for a thread.
+func (a *ACPAgent) dispatchToTurnCh(threadID string, evt *codexTurnEvent) {
+	a.notifyMu.Lock()
+	ch, ok := a.turnCh[threadID]
+	if !ok {
+		// Fallback: try any active turn channel
+		for _, c := range a.turnCh {
+			ch = c
+			ok = true
+			break
+		}
+	}
+	a.notifyMu.Unlock()
+
+	if ok {
+		select {
+		case ch <- evt:
 		default:
 		}
 	}
