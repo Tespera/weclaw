@@ -1,24 +1,28 @@
 package config
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"time"
 )
 
 // agentCandidate defines one way to run an agent.
 // Multiple candidates can map to the same agent name; the first detected wins.
 type agentCandidate struct {
-	Name   string   // agent name (e.g. "claude", "codex")
-	Binary string   // binary to look up in PATH
-	Args   []string // extra args (e.g. ["acp"] for cursor)
-	Type   string   // "acp", "cli"
-	Model  string   // default model
+	Name      string   // agent name (e.g. "claude", "codex")
+	Binary    string   // binary to look up in PATH
+	Args      []string // extra args (e.g. ["acp"] for cursor)
+	CheckArgs []string // optional capability probe args (must exit 0)
+	Type      string   // "acp", "cli"
+	Model     string   // default model
 }
 
 // agentCandidates is ordered by priority: for each agent name, earlier entries
@@ -29,6 +33,7 @@ var agentCandidates = []agentCandidate{
 	{Name: "claude", Binary: "claude", Type: "cli", Model: "sonnet"},
 	// codex: prefer ACP, fallback to CLI
 	{Name: "codex", Binary: "codex-acp", Type: "acp", Model: ""},
+	{Name: "codex", Binary: "codex", Args: []string{"app-server", "--listen", "stdio://"}, CheckArgs: []string{"app-server", "--help"}, Type: "acp", Model: ""},
 	{Name: "codex", Binary: "codex", Type: "cli", Model: ""},
 	// ACP-only agents
 	{Name: "cursor", Binary: "agent", Args: []string{"acp"}, Type: "acp", Model: ""},
@@ -58,6 +63,12 @@ func DetectAndConfigure(cfg *Config) bool {
 
 		path, err := lookPath(candidate.Binary)
 		if err != nil {
+			continue
+		}
+
+		// Run capability probe if specified
+		if len(candidate.CheckArgs) > 0 && !commandProbe(path, candidate.CheckArgs) {
+			log.Printf("[config] skipping %s at %s (type=%s): probe failed (%v)", candidate.Name, path, candidate.Type, candidate.CheckArgs)
 			continue
 		}
 
@@ -195,6 +206,16 @@ func loadOpenclawGateway() (gwURL, gwToken, gwPassword string) {
 	}
 
 	return
+}
+
+// commandProbe runs a binary with args and returns true if it exits 0.
+func commandProbe(binary string, args []string) bool {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, binary, args...)
+	cmd.Stdout = io.Discard
+	cmd.Stderr = io.Discard
+	return cmd.Run() == nil
 }
 
 func agentExists(cfg *Config, name string) bool {

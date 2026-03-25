@@ -9,6 +9,7 @@ import (
 	"log"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -23,6 +24,7 @@ type ACPAgent struct {
 	systemPrompt string
 	cwd          string
 	env          map[string]string
+	protocol     string // "legacy_acp" or "codex_app_server"
 
 	mu       sync.Mutex
 	cmd      *exec.Cmd
@@ -30,7 +32,8 @@ type ACPAgent struct {
 	scanner  *bufio.Scanner
 	started  bool
 	nextID   atomic.Int64
-	sessions map[string]string // conversationID -> sessionID
+	sessions map[string]string // conversationID -> sessionID (legacy ACP)
+	threads  map[string]string // conversationID -> threadID (codex app-server)
 
 	// pending tracks in-flight JSON-RPC requests
 	pendingMu sync.Mutex
@@ -39,6 +42,7 @@ type ACPAgent struct {
 	// notifications channel for session/update events
 	notifyMu sync.Mutex
 	notifyCh map[string]chan *sessionUpdate // sessionID -> channel
+	turnCh   map[string]chan *codexTurnEvent
 
 	stderr *acpStderrWriter // captures stderr for error reporting
 }
@@ -139,6 +143,47 @@ type permissionOption struct {
 	Kind     string `json:"kind"`
 }
 
+// Codex app-server protocol constants and types.
+const (
+	protocolLegacyACP      = "legacy_acp"
+	protocolCodexAppServer = "codex_app_server"
+)
+
+type codexTurnStartParams struct {
+	ThreadID       string           `json:"threadId"`
+	ApprovalPolicy string           `json:"approvalPolicy,omitempty"`
+	Input          []codexUserInput `json:"input"`
+	SandboxPolicy  interface{}      `json:"sandboxPolicy,omitempty"`
+	Model          string           `json:"model,omitempty"`
+	Cwd            string           `json:"cwd,omitempty"`
+}
+
+type codexUserInput struct {
+	Type string `json:"type"`
+	Text string `json:"text,omitempty"`
+}
+
+type codexTurnEvent struct {
+	Kind  string
+	Delta string
+	Text  string
+}
+
+func detectACPProtocol(command string, args []string) string {
+	base := strings.ToLower(filepath.Base(command))
+	if base == "codex-acp" || strings.HasPrefix(base, "codex-acp.") {
+		return protocolCodexAppServer
+	}
+	if base == "codex" || base == "codex.exe" {
+		for _, arg := range args {
+			if arg == "app-server" {
+				return protocolCodexAppServer
+			}
+		}
+	}
+	return protocolLegacyACP
+}
+
 // NewACPAgent creates a new ACP agent.
 func NewACPAgent(cfg ACPAgentConfig) *ACPAgent {
 	if cfg.Command == "" {
@@ -147,6 +192,7 @@ func NewACPAgent(cfg ACPAgentConfig) *ACPAgent {
 	if cfg.Cwd == "" {
 		cfg.Cwd = defaultWorkspace()
 	}
+	protocol := detectACPProtocol(cfg.Command, cfg.Args)
 	return &ACPAgent{
 		command:      cfg.Command,
 		args:         cfg.Args,
@@ -154,9 +200,12 @@ func NewACPAgent(cfg ACPAgentConfig) *ACPAgent {
 		systemPrompt: cfg.SystemPrompt,
 		cwd:          cfg.Cwd,
 		env:          cfg.Env,
+		protocol:     protocol,
 		sessions:     make(map[string]string),
+		threads:      make(map[string]string),
 		pending:      make(map[int64]chan *rpcResponse),
 		notifyCh:     make(map[string]chan *sessionUpdate),
+		turnCh:       make(map[string]chan *codexTurnEvent),
 	}
 }
 
@@ -217,13 +266,24 @@ func (a *ACPAgent) Start(ctx context.Context) error {
 	initCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 
-	log.Printf("[acp] sending initialize handshake (pid=%d)...", pid)
-	result, err := a.call(initCtx, "initialize", initParams{
-		ProtocolVersion: 1,
-		ClientCapabilities: clientCapabilities{
-			FS: &fsCapabilities{ReadTextFile: true, WriteTextFile: true},
-		},
-	})
+	log.Printf("[acp] sending initialize handshake (pid=%d, protocol=%s)...", pid, a.protocol)
+	var result json.RawMessage
+	if a.protocol == protocolCodexAppServer {
+		result, err = a.call(initCtx, "initialize", map[string]interface{}{
+			"clientInfo": map[string]string{"name": "weclaw", "version": "0.3.0"},
+		})
+		if err == nil {
+			// codex app-server expects an "initialized" notification after initialize response
+			err = a.notify("initialized", nil)
+		}
+	} else {
+		result, err = a.call(initCtx, "initialize", initParams{
+			ProtocolVersion: 1,
+			ClientCapabilities: clientCapabilities{
+				FS: &fsCapabilities{ReadTextFile: true, WriteTextFile: true},
+			},
+		})
+	}
 	if err != nil {
 		a.mu.Lock()
 		a.started = false
@@ -256,6 +316,13 @@ func (a *ACPAgent) Stop() {
 	a.started = false
 }
 
+// SetCwd changes the working directory for subsequent sessions.
+func (a *ACPAgent) SetCwd(cwd string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.cwd = cwd
+}
+
 // ResetSession clears the existing session for the given conversationID and
 // immediately creates a new one, returning the new session ID.
 func (a *ACPAgent) ResetSession(ctx context.Context, conversationID string) (string, error) {
@@ -277,6 +344,11 @@ func (a *ACPAgent) Chat(ctx context.Context, conversationID string, message stri
 		if err := a.Start(ctx); err != nil {
 			return "", err
 		}
+	}
+
+	// Route to codex app-server protocol if applicable
+	if a.protocol == protocolCodexAppServer {
+		return a.chatCodexAppServer(ctx, conversationID, message)
 	}
 
 	// Get or create session
@@ -396,6 +468,162 @@ func (a *ACPAgent) getOrCreateSession(ctx context.Context, conversationID string
 	return sessionResult.SessionID, true, nil
 }
 
+// --- Codex app-server protocol ---
+
+func (a *ACPAgent) getOrCreateThread(ctx context.Context, conversationID string) (string, bool, error) {
+	a.mu.Lock()
+	tid, exists := a.threads[conversationID]
+	a.mu.Unlock()
+
+	if exists {
+		return tid, false, nil
+	}
+
+	params := map[string]interface{}{
+		"approvalPolicy": "never",
+		"cwd":            a.cwd,
+		"sandbox":        "danger-full-access",
+	}
+	if a.model != "" {
+		params["model"] = a.model
+	}
+	result, err := a.call(ctx, "thread/start", params)
+	if err != nil {
+		return "", false, err
+	}
+
+	var threadResult struct {
+		Thread struct {
+			ID string `json:"id"`
+		} `json:"thread"`
+	}
+	if err := json.Unmarshal(result, &threadResult); err != nil {
+		return "", false, fmt.Errorf("parse thread/start result: %w", err)
+	}
+	if threadResult.Thread.ID == "" {
+		return "", false, fmt.Errorf("thread/start returned empty thread id")
+	}
+
+	a.mu.Lock()
+	a.threads[conversationID] = threadResult.Thread.ID
+	a.mu.Unlock()
+
+	return threadResult.Thread.ID, true, nil
+}
+
+func (a *ACPAgent) chatCodexAppServer(ctx context.Context, conversationID string, message string) (string, error) {
+	threadID, isNew, err := a.getOrCreateThread(ctx, conversationID)
+	if err != nil {
+		return "", fmt.Errorf("thread error: %w", err)
+	}
+
+	pid := 0
+	a.mu.Lock()
+	if a.cmd != nil && a.cmd.Process != nil {
+		pid = a.cmd.Process.Pid
+	}
+	a.mu.Unlock()
+
+	if isNew {
+		log.Printf("[acp] new thread created (pid=%d, thread=%s, conversation=%s)", pid, threadID, conversationID)
+	} else {
+		log.Printf("[acp] reusing thread (pid=%d, thread=%s, conversation=%s)", pid, threadID, conversationID)
+	}
+
+	// Register turn event channel
+	turnCh := make(chan *codexTurnEvent, 256)
+	a.notifyMu.Lock()
+	a.turnCh[threadID] = turnCh
+	a.notifyMu.Unlock()
+
+	defer func() {
+		a.notifyMu.Lock()
+		delete(a.turnCh, threadID)
+		a.notifyMu.Unlock()
+	}()
+
+	// Start turn
+	type turnDoneMsg struct {
+		result json.RawMessage
+		err    error
+	}
+	turnDone := make(chan turnDoneMsg, 1)
+	go func() {
+		result, err := a.call(ctx, "turn/start", codexTurnStartParams{
+			ThreadID:       threadID,
+			ApprovalPolicy: "never",
+			Input:          []codexUserInput{{Type: "text", Text: message}},
+			SandboxPolicy:  map[string]interface{}{"type": "dangerFullAccess"},
+			Model:          a.model,
+			Cwd:            a.cwd,
+		})
+		turnDone <- turnDoneMsg{result: result, err: err}
+	}()
+
+	// Collect text deltas from turn events
+	var textParts []string
+	for {
+		select {
+		case <-ctx.Done():
+			return "", ctx.Err()
+		case evt := <-turnCh:
+			if evt.Delta != "" {
+				textParts = append(textParts, evt.Delta)
+			}
+			if evt.Text != "" {
+				textParts = append(textParts, evt.Text)
+			}
+		case done := <-turnDone:
+			// Drain remaining events
+			for {
+				select {
+				case evt := <-turnCh:
+					if evt.Delta != "" {
+						textParts = append(textParts, evt.Delta)
+					}
+					if evt.Text != "" {
+						textParts = append(textParts, evt.Text)
+					}
+				default:
+					goto drained
+				}
+			}
+		drained:
+			if done.err != nil {
+				return "", fmt.Errorf("turn error: %w", done.err)
+			}
+			result := strings.TrimSpace(strings.Join(textParts, ""))
+			if result == "" {
+				return "", fmt.Errorf("agent returned empty response")
+			}
+			return result, nil
+		}
+	}
+}
+
+// notify sends a JSON-RPC notification (no id, no response expected).
+func (a *ACPAgent) notify(method string, params interface{}) error {
+	msg := struct {
+		JSONRPC string      `json:"jsonrpc"`
+		Method  string      `json:"method"`
+		Params  interface{} `json:"params,omitempty"`
+	}{
+		JSONRPC: "2.0",
+		Method:  method,
+		Params:  params,
+	}
+
+	data, err := json.Marshal(msg)
+	if err != nil {
+		return fmt.Errorf("marshal notification: %w", err)
+	}
+
+	a.mu.Lock()
+	_, err = fmt.Fprintf(a.stdin, "%s\n", data)
+	a.mu.Unlock()
+	return err
+}
+
 // call sends a JSON-RPC request and waits for the response.
 func (a *ACPAgent) call(ctx context.Context, method string, params interface{}) (json.RawMessage, error) {
 	id := a.nextID.Add(1)
@@ -482,6 +710,12 @@ func (a *ACPAgent) readLoop() {
 			// Auto-allow all permissions
 			a.handlePermissionRequest(line)
 
+		// Codex app-server events
+		case "item/agentMessage/delta":
+			a.handleCodexDelta(msg.Params)
+		case "turn/approval/request":
+			a.handlePermissionRequest(line)
+
 		default:
 			if msg.Method != "" {
 				log.Printf("[acp] unhandled method: %s (raw: %.200s)", msg.Method, line)
@@ -514,6 +748,28 @@ func (a *ACPAgent) handleSessionUpdate(params json.RawMessage) {
 		case ch <- &p.Update:
 		default:
 			log.Printf("[acp] notification channel full, dropping update (session=%s)", p.SessionID)
+		}
+	}
+}
+
+func (a *ACPAgent) handleCodexDelta(params json.RawMessage) {
+	var p struct {
+		ThreadID string `json:"threadId"`
+		Delta    string `json:"delta"`
+		Text     string `json:"text"`
+	}
+	if err := json.Unmarshal(params, &p); err != nil {
+		return
+	}
+
+	a.notifyMu.Lock()
+	ch, ok := a.turnCh[p.ThreadID]
+	a.notifyMu.Unlock()
+
+	if ok {
+		select {
+		case ch <- &codexTurnEvent{Delta: p.Delta, Text: p.Text}:
+		default:
 		}
 	}
 }
