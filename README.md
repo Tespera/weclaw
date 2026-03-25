@@ -66,7 +66,7 @@ Send these as WeChat messages:
 | `/claude` | Switch default agent to Claude |
 | `/cwd /path/to/project` | Switch workspace directory |
 | `/new` | Start a new conversation (clear session) |
-| `/status` | Show current agent info |
+| `/info` | Show current agent info |
 | `/help` | Show help message |
 
 ### Aliases

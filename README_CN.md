@@ -67,7 +67,7 @@ docker run -it -v ~/.weclaw:/root/.weclaw ghcr.io/fastclaw-ai/weclaw start
 | `/claude`               | 切换默认 Agent 为 Claude |
 | `/cwd /path/to/project` | 切换工作目录             |
 | `/new`                  | 开始新对话（清除会话）   |
-| `/status`               | 查看当前 Agent 信息      |
+| `/info`                 | 查看当前 Agent 信息      |
 | `/help`                 | 查看帮助信息             |
 
 ### 快捷别名

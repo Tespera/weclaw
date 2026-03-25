@@ -206,7 +206,7 @@ func (h *Handler) HandleMessage(ctx context.Context, client *ilink.Client, msg i
 	}
 
 	// Built-in commands (no typing needed)
-	if trimmed == "/status" {
+	if trimmed == "/info" {
 		reply := h.buildStatus()
 		if err := SendTextReply(ctx, client, msg.FromUserID, reply, msg.ContextToken, clientID); err != nil {
 			log.Printf("[handler] failed to send reply to %s: %v", msg.FromUserID, err)
@@ -445,7 +445,7 @@ func buildHelpText() string {
 /agentname message - Send message to a specific agent
 /new or /clear - Start a new session (clears conversation history)
 /cwd /path/to/project - Switch workspace directory
-/status - Show current agent info
+/info - Show current agent info
 /help - Show this help message
 
 Aliases: /cc(claude) /cx(codex) /cs(cursor) /km(kimi) /gm(gemini) /oc(openclaw) /ocd(opencode)`
