@@ -64,6 +64,8 @@ Send these as WeChat messages:
 | `/codex write a function` | Send to a specific agent |
 | `/cc explain this code` | Send to agent by alias |
 | `/claude` | Switch default agent to Claude |
+| `/cwd /path/to/project` | Switch workspace directory |
+| `/new` | Start a new conversation (clear session) |
 | `/status` | Show current agent info |
 | `/help` | Show help message |
 
@@ -284,7 +286,17 @@ git tag v0.1.0
 git push origin v0.1.0
 ```
 
-The workflow builds binaries for `darwin/linux` x `amd64/arm64`, creates a GitHub Release, and uploads all artifacts with checksums.
+The workflow builds binaries for `darwin/linux/windows` x `amd64/arm64`, creates a GitHub Release, and uploads all artifacts with checksums.
+
+## Update
+
+```bash
+# Update to the latest version (auto-restarts if running)
+weclaw update
+
+# Check current version
+weclaw version
+```
 
 ## Development
 

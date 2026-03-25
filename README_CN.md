@@ -65,6 +65,8 @@ docker run -it -v ~/.weclaw:/root/.weclaw ghcr.io/fastclaw-ai/weclaw start
 | `/codex 写一个排序函数` | 发送给指定 Agent         |
 | `/cc 解释一下这段代码`  | 通过别名发送             |
 | `/claude`               | 切换默认 Agent 为 Claude |
+| `/cwd /path/to/project` | 切换工作目录             |
+| `/new`                  | 开始新对话（清除会话）   |
 | `/status`               | 查看当前 Agent 信息      |
 | `/help`                 | 查看帮助信息             |
 
@@ -286,7 +288,17 @@ git tag v0.1.0
 git push origin v0.1.0
 ```
 
-自动构建 `darwin/linux` x `amd64/arm64` 四个平台的二进制，创建 GitHub Release 并上传所有产物和校验文件。
+自动构建 `darwin/linux/windows` x `amd64/arm64` 的二进制，创建 GitHub Release 并上传所有产物和校验文件。
+
+## 更新
+
+```bash
+# 更新到最新版本（运行中会自动重启）
+weclaw update
+
+# 查看当前版本
+weclaw version
+```
 
 ## 开发
 
