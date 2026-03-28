@@ -40,6 +40,7 @@ type Handler struct {
 	saveDefault   SaveDefaultFunc
 	contextTokens sync.Map   // map[userID]contextToken
 	saveDir       string     // directory to save images/files to
+	seenMsgs      sync.Map   // map[int64]time.Time — dedup by message_id
 }
 
 // NewHandler creates a new message handler.
@@ -54,6 +55,17 @@ func NewHandler(factory AgentFactory, saveDefault SaveDefaultFunc) *Handler {
 // SetSaveDir sets the directory for saving images and files.
 func (h *Handler) SetSaveDir(dir string) {
 	h.saveDir = dir
+}
+
+// cleanSeenMsgs removes entries older than 5 minutes from the dedup cache.
+func (h *Handler) cleanSeenMsgs() {
+	cutoff := time.Now().Add(-5 * time.Minute)
+	h.seenMsgs.Range(func(key, value any) bool {
+		if t, ok := value.(time.Time); ok && t.Before(cutoff) {
+			h.seenMsgs.Delete(key)
+		}
+		return true
+	})
 }
 
 // SetCustomAliases sets custom alias mappings from config.
@@ -236,8 +248,24 @@ func (h *Handler) HandleMessage(ctx context.Context, client *ilink.Client, msg i
 		return
 	}
 
-	// Extract text from item list
+	// Deduplicate by message_id to avoid processing the same message multiple times
+	// (voice messages may trigger multiple finish-state updates)
+	if msg.MessageID != 0 {
+		if _, loaded := h.seenMsgs.LoadOrStore(msg.MessageID, time.Now()); loaded {
+			return
+		}
+		// Clean up old entries periodically (fire-and-forget)
+		go h.cleanSeenMsgs()
+	}
+
+	// Extract text from item list (text message or voice transcription)
 	text := extractText(msg)
+	if text == "" {
+		if voiceText := extractVoiceText(msg); voiceText != "" {
+			text = voiceText
+			log.Printf("[handler] voice transcription from %s: %q", msg.FromUserID, truncate(text, 80))
+		}
+	}
 	if text == "" {
 		// Check for image message
 		if img := extractImage(msg); img != nil && h.saveDir != "" {
@@ -621,6 +649,15 @@ func extractImage(msg ilink.WeixinMessage) *ilink.ImageItem {
 		}
 	}
 	return nil
+}
+
+func extractVoiceText(msg ilink.WeixinMessage) string {
+	for _, item := range msg.ItemList {
+		if item.Type == ilink.ItemTypeVoice && item.VoiceItem != nil && item.VoiceItem.Text != "" {
+			return item.VoiceItem.Text
+		}
+	}
+	return ""
 }
 
 func (h *Handler) handleImageSave(ctx context.Context, client *ilink.Client, msg ilink.WeixinMessage, img *ilink.ImageItem) {

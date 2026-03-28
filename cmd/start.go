@@ -343,13 +343,8 @@ func logFile() string {
 
 // runDaemon spawns weclaw start (without --daemon) as a background process.
 func runDaemon() error {
-	// Check if already running
-	if pid, err := readPid(); err == nil {
-		if processExists(pid) {
-			fmt.Printf("weclaw is already running (pid=%d)\n", pid)
-			return nil
-		}
-	}
+	// Kill any existing weclaw processes before starting a new one
+	stopAllWeclaw()
 
 	// Ensure log directory exists
 	if err := os.MkdirAll(weclawDir(), 0o700); err != nil {
@@ -411,4 +406,24 @@ func processExists(pid int) bool {
 	}
 	// Signal 0 checks if process exists without killing it
 	return p.Signal(syscall.Signal(0)) == nil
+}
+
+// stopAllWeclaw kills all running weclaw processes (by PID file and by process scan).
+func stopAllWeclaw() {
+	// 1. Kill by PID file
+	if pid, err := readPid(); err == nil && processExists(pid) {
+		if p, err := os.FindProcess(pid); err == nil {
+			_ = p.Signal(syscall.SIGTERM)
+		}
+	}
+	os.Remove(pidFile())
+
+	// 2. Kill any remaining weclaw processes by scanning
+	exe, err := os.Executable()
+	if err != nil {
+		return
+	}
+	// Use pkill to kill all processes matching the executable path
+	_ = exec.Command("pkill", "-f", exe+" start").Run()
+	time.Sleep(500 * time.Millisecond)
 }

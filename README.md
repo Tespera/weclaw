@@ -100,7 +100,9 @@ Switching default agent is persisted to config — survives restarts.
 
 ## Media Messages
 
-WeClaw supports sending images, videos, and files to WeChat.
+WeClaw supports sending images, videos, files, and voice messages to/from WeChat.
+
+**Voice messages:** When you send a voice message in WeChat, WeClaw automatically uses WeChat's speech-to-text transcription and forwards the text to the AI agent. Duplicate voice message events are automatically deduplicated.
 
 **From agent replies:** When an AI agent returns markdown with images (`![](url)`), WeClaw automatically extracts the image URLs, downloads them, uploads to WeChat CDN (AES-128-ECB encrypted), and sends them as image messages.
 
