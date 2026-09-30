@@ -2,6 +2,12 @@
 
 本仓库自 v0.9.0 起独立维护，不再跟随 [fastclaw-ai/weclaw](https://github.com/fastclaw-ai/weclaw)。更早的版本见上游。
 
+## v0.9.3 — 2026-09-30
+
+### 新增
+- `weclaw send --media` 支持本地路径（任意文件类型；`~`、相对路径、`file://`），可重复传多个；发送前先校验全部媒体，避免只发出一半
+- HTTP `/api/send` 新增 `media` 字段（网址或本地绝对路径），`media_url` 保留兼容；本地路径仅接受来自本机的请求
+
 ## v0.9.2 — 2026-09-30
 
 ### 修复

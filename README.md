@@ -123,7 +123,12 @@ weclaw send --to "user_id@im.wechat" --text "看看这个" --media "https://exam
 
 # 发送文件
 weclaw send --to "user_id@im.wechat" --media "https://example.com/report.pdf"
+
+# 发送本地文件（任意类型；支持 ~、相对路径、file://；--media 可重复）
+weclaw send --to "user_id@im.wechat" --media ~/Desktop/report.pdf --media ./chart.png
 ```
+
+所有 `--media` 会先校验（文件存在且是普通文件），全部通过后才开始发送，不会只发出一半。
 
 **HTTP API**（`weclaw start` 运行时，默认监听 `127.0.0.1:18011`）：
 
@@ -136,15 +141,22 @@ curl -X POST http://127.0.0.1:18011/api/send \
 # 发送图片
 curl -X POST http://127.0.0.1:18011/api/send \
   -H "Content-Type: application/json" \
-  -d '{"to": "user_id@im.wechat", "media_url": "https://example.com/photo.png"}'
+  -d '{"to": "user_id@im.wechat", "media": "https://example.com/photo.png"}'
+
+# 发送本地文件（必须是绝对路径）
+curl -X POST http://127.0.0.1:18011/api/send \
+  -H "Content-Type: application/json" \
+  -d '{"to": "user_id@im.wechat", "media": "/Users/me/Desktop/report.pdf"}'
 
 # 发送文本 + 媒体
 curl -X POST http://127.0.0.1:18011/api/send \
   -H "Content-Type: application/json" \
-  -d '{"to": "user_id@im.wechat", "text": "看看这个", "media_url": "https://example.com/photo.png"}'
+  -d '{"to": "user_id@im.wechat", "text": "看看这个", "media": "https://example.com/photo.png"}'
 ```
 
-支持的媒体类型：图片（png、jpg、gif、webp）、视频（mp4、mov）、文件（pdf、doc、zip 等）。
+`media` 接受网址或本地绝对路径（旧字段 `media_url` 仍可用）。本地路径只接受来自本机（127.0.0.1 / ::1）的请求，即使把 API 绑到了其他地址也不会让远程调用读取本地文件。
+
+媒体按类型发送：图片（png、jpg、gif、webp、bmp）按图片发，视频（mp4、mov、webm、mkv、avi）按视频发，其余任意类型按文件发。
 
 设置 `WECLAW_API_ADDR` 环境变量可更改监听地址（如 `0.0.0.0:18011`）。
 

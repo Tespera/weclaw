@@ -12,15 +12,15 @@ import (
 )
 
 var (
-	sendTo       string
-	sendText     string
-	sendMediaURL string
+	sendTo    string
+	sendText  string
+	sendMedia []string
 )
 
 func init() {
 	sendCmd.Flags().StringVar(&sendTo, "to", "", "Target user ID (ilink user ID)")
 	sendCmd.Flags().StringVar(&sendText, "text", "", "Message text to send")
-	sendCmd.Flags().StringVar(&sendMediaURL, "media", "", "Media URL to send (image/video/file)")
+	sendCmd.Flags().StringArrayVar(&sendMedia, "media", nil, "Image/video/file to send: URL or local path (repeatable)")
 	sendCmd.MarkFlagRequired("to")
 	rootCmd.AddCommand(sendCmd)
 }
@@ -30,10 +30,21 @@ var sendCmd = &cobra.Command{
 	Short: "Send a message to a WeChat user",
 	Example: `  weclaw send --to "user_id@im.wechat" --text "Hello"
   weclaw send --to "user_id@im.wechat" --media "https://example.com/image.png"
-  weclaw send --to "user_id@im.wechat" --text "See this" --media "https://example.com/image.png"`,
+  weclaw send --to "user_id@im.wechat" --text "See this" --media "https://example.com/image.png"
+  weclaw send --to "user_id@im.wechat" --media ~/Desktop/report.pdf --media ./chart.png`,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		if sendText == "" && sendMediaURL == "" {
+		if sendText == "" && len(sendMedia) == 0 {
 			return fmt.Errorf("at least one of --text or --media is required")
+		}
+		// Resolve every media item before sending anything, so a bad path
+		// does not leave the recipient with a partial message.
+		media := make([]messaging.MediaRef, 0, len(sendMedia))
+		for _, ref := range sendMedia {
+			m, err := messaging.ResolveMediaRef(ref)
+			if err != nil {
+				return err
+			}
+			media = append(media, m)
 		}
 
 		ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -56,11 +67,11 @@ var sendCmd = &cobra.Command{
 			fmt.Println("Text sent")
 		}
 
-		if sendMediaURL != "" {
-			if err := messaging.SendMediaFromURL(ctx, client, sendTo, sendMediaURL, ""); err != nil {
-				return fmt.Errorf("send media failed: %w", err)
+		for _, m := range media {
+			if err := messaging.SendMedia(ctx, client, sendTo, m, ""); err != nil {
+				return fmt.Errorf("send media %s failed: %w", m, err)
 			}
-			fmt.Println("Media sent")
+			fmt.Printf("Media sent: %s\n", m)
 		}
 
 		return nil

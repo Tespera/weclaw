@@ -5,7 +5,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
+	"path/filepath"
+	"strings"
 
 	"weclaw/ilink"
 	"weclaw/messaging"
@@ -29,7 +32,8 @@ func NewServer(clients []*ilink.Client, addr string) *Server {
 type SendRequest struct {
 	To       string `json:"to"`
 	Text     string `json:"text,omitempty"`
-	MediaURL string `json:"media_url,omitempty"` // image/video/file URL
+	Media    string `json:"media,omitempty"`     // image/video/file: URL or absolute local path
+	MediaURL string `json:"media_url,omitempty"` // deprecated alias of Media, kept for compatibility
 }
 
 // Run starts the HTTP server. Blocks until ctx is cancelled.
@@ -71,9 +75,29 @@ func (s *Server) handleSend(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `"to" is required`, http.StatusBadRequest)
 		return
 	}
-	if req.Text == "" && req.MediaURL == "" {
-		http.Error(w, `"text" or "media_url" is required`, http.StatusBadRequest)
+	mediaRef := req.Media
+	if mediaRef == "" {
+		mediaRef = req.MediaURL
+	}
+	if req.Text == "" && mediaRef == "" {
+		http.Error(w, `"text" or "media" is required`, http.StatusBadRequest)
 		return
+	}
+	// Resolve media before sending text so a bad path fails the whole request.
+	var media *messaging.MediaRef
+	if mediaRef != "" {
+		if !isRemoteURL(mediaRef) && !isLoopback(r.RemoteAddr) {
+			// The API may be bound to a non-loopback address (WECLAW_API_ADDR);
+			// never let remote callers read local files.
+			http.Error(w, "local file paths are only accepted from localhost", http.StatusForbidden)
+			return
+		}
+		m, err := resolveAPIMedia(mediaRef)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		media = &m
 	}
 
 	if len(s.clients) == 0 {
@@ -105,15 +129,40 @@ func (s *Server) handleSend(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Send media if provided
-	if req.MediaURL != "" {
-		if err := messaging.SendMediaFromURL(ctx, client, req.To, req.MediaURL, ""); err != nil {
+	if media != nil {
+		if err := messaging.SendMedia(ctx, client, req.To, *media, ""); err != nil {
 			log.Printf("[api] send media failed: %v", err)
 			http.Error(w, "send media failed: "+err.Error(), http.StatusInternalServerError)
 			return
 		}
-		log.Printf("[api] sent media to %s: %s", req.To, req.MediaURL)
+		log.Printf("[api] sent media to %s: %s", req.To, media)
 	}
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+}
+
+// resolveAPIMedia accepts a URL or an absolute local path. Relative paths are
+// rejected: they would resolve against the daemon's directory, not the caller's.
+func resolveAPIMedia(ref string) (messaging.MediaRef, error) {
+	lower := strings.ToLower(strings.TrimSpace(ref))
+	isURL := strings.HasPrefix(lower, "http://") || strings.HasPrefix(lower, "https://") || strings.HasPrefix(lower, "file://")
+	if !isURL && !strings.HasPrefix(ref, "~") && !filepath.IsAbs(ref) {
+		return messaging.MediaRef{}, fmt.Errorf("media path must be absolute: %q", ref)
+	}
+	return messaging.ResolveMediaRef(ref)
+}
+
+func isRemoteURL(ref string) bool {
+	lower := strings.ToLower(strings.TrimSpace(ref))
+	return strings.HasPrefix(lower, "http://") || strings.HasPrefix(lower, "https://")
+}
+
+func isLoopback(remoteAddr string) bool {
+	host, _, err := net.SplitHostPort(remoteAddr)
+	if err != nil {
+		host = remoteAddr
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
