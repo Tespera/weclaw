@@ -16,6 +16,7 @@ type AgentInfo struct {
 	Model   string // e.g. "sonnet", "gpt-4o-mini"
 	Command string // binary path, e.g. "/usr/local/bin/claude-agent-acp"
 	PID     int    // subprocess PID (0 if not applicable, e.g. http agent)
+	Cwd     string // working directory (workspace); empty for http agents
 }
 
 // String returns a human-readable summary for logging.

@@ -1163,6 +1163,7 @@ func (a *ACPAgent) Info() AgentInfo {
 	if a.cmd != nil && a.cmd.Process != nil {
 		info.PID = a.cmd.Process.Pid
 	}
+	info.Cwd = a.cwd
 	a.mu.Unlock()
 	return info
 }

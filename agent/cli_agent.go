@@ -76,11 +76,15 @@ type streamContent struct {
 
 // Info returns metadata about this agent.
 func (a *CLIAgent) Info() AgentInfo {
+	a.mu.Lock()
+	cwd := a.cwd
+	a.mu.Unlock()
 	return AgentInfo{
 		Name:    a.name,
 		Type:    "cli",
 		Model:   a.model,
 		Command: a.command,
+		Cwd:     cwd,
 	}
 }
 

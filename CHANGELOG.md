@@ -2,6 +2,14 @@
 
 本仓库自 v0.9.0 起独立维护，不再跟随 [fastclaw-ai/weclaw](https://github.com/fastclaw-ai/weclaw)。更早的版本见上游。
 
+## v0.9.1 — 2026-09-30
+
+### 修复
+- `/new` 回复里的 Agent 名显示成了 ACP 适配器的命令路径（如 `/opt/homebrew/bin/claude-agent-acp`），现在显示配置名（如 `claude`）
+
+### 新增
+- `/new` 回复和 `/info` 显示当前工作区（主目录缩写为 `~`）
+
 ## v0.9.0 — 2026-09-30
 
 基于上游 v0.7.1。

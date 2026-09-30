@@ -606,20 +606,41 @@ func (h *Handler) switchDefault(ctx context.Context, name string) string {
 
 // resetDefaultSession resets the session for the given userID on the default agent.
 func (h *Handler) resetDefaultSession(ctx context.Context, userID string) string {
+	h.mu.RLock()
+	name := h.defaultName // config name ("claude"); ACP Info().Name is the command path
+	h.mu.RUnlock()
 	ag := h.getDefaultAgent()
 	if ag == nil {
 		return "No agent running."
 	}
-	name := ag.Info().Name
 	sessionID, err := ag.ResetSession(ctx, userID)
 	if err != nil {
 		log.Printf("[handler] reset session failed for %s: %v", userID, err)
 		return fmt.Sprintf("Failed to reset session: %v", err)
 	}
-	if sessionID != "" {
-		return fmt.Sprintf("已创建新的%s会话\n%s", name, sessionID)
+	reply := fmt.Sprintf("已创建新的 %s 会话", name)
+	if cwd := ag.Info().Cwd; cwd != "" {
+		reply += "\n工作区: " + displayPath(cwd)
 	}
-	return fmt.Sprintf("已创建新的%s会话", name)
+	if sessionID != "" {
+		reply += "\n会话: " + sessionID
+	}
+	return reply
+}
+
+// displayPath shortens a path under the home directory to ~/... for chat replies.
+func displayPath(p string) string {
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return p
+	}
+	if p == home {
+		return "~"
+	}
+	if strings.HasPrefix(p, home+string(os.PathSeparator)) {
+		return "~" + p[len(home):]
+	}
+	return p
 }
 
 // handleCwd handles the /cwd command. It updates the working directory for all running agents.
@@ -700,7 +721,11 @@ func (h *Handler) buildStatus() string {
 	}
 
 	info := ag.Info()
-	return fmt.Sprintf("agent: %s\ntype: %s\nmodel: %s", h.defaultName, info.Type, info.Model)
+	status := fmt.Sprintf("agent: %s\ntype: %s\nmodel: %s", h.defaultName, info.Type, info.Model)
+	if info.Cwd != "" {
+		status += "\nworkspace: " + displayPath(info.Cwd)
+	}
+	return status
 }
 
 func buildHelpText() string {
