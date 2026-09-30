@@ -885,6 +885,28 @@ func (a *ACPAgent) dispatchToTurnCh(threadID string, evt *codexTurnEvent) {
 	}
 }
 
+// allowKindPreference ranks ACP permission option kinds for auto-approval.
+// ACP kinds are allow_once / allow_always / reject_once / reject_always; older
+// adapters also used a bare "allow". allow_once comes first so auto-approval
+// never persists a rule on the agent side.
+var allowKindPreference = []string{"allow_once", "allow_always", "allow"}
+
+// pickAllowOption returns the optionId to auto-approve a permission request.
+// Falls back to "allow" when no allow-kind option is offered.
+func pickAllowOption(options []permissionOption) string {
+	optionID := "allow"
+	bestRank := len(allowKindPreference)
+	for _, opt := range options {
+		for rank, kind := range allowKindPreference {
+			if opt.Kind == kind && rank < bestRank {
+				optionID = opt.OptionID
+				bestRank = rank
+			}
+		}
+	}
+	return optionID
+}
+
 func (a *ACPAgent) handlePermissionRequest(raw string) {
 	// Parse the request to get the ID and auto-allow
 	var req struct {
@@ -896,14 +918,7 @@ func (a *ACPAgent) handlePermissionRequest(raw string) {
 		return
 	}
 
-	// Find the "allow" option
-	optionID := "allow"
-	for _, opt := range req.Params.Options {
-		if opt.Kind == "allow" {
-			optionID = opt.OptionID
-			break
-		}
-	}
+	optionID := pickAllowOption(req.Params.Options)
 
 	// Send response
 	resp := map[string]interface{}{
