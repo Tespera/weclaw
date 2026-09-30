@@ -102,7 +102,21 @@ type newSessionParams struct {
 }
 
 type newSessionResult struct {
+	SessionID     string                `json:"sessionId"`
+	ConfigOptions []sessionConfigOption `json:"configOptions,omitempty"`
+}
+
+// sessionConfigOption is the subset of an ACP session config option weclaw needs.
+// Category is a semantic hint ("model", "mode", "thought_level", ...).
+type sessionConfigOption struct {
+	ID       string `json:"id"`
+	Category string `json:"category,omitempty"`
+}
+
+type setConfigOptionParams struct {
 	SessionID string `json:"sessionId"`
+	ConfigID  string `json:"configId"`
+	Value     string `json:"value"`
 }
 
 type promptParams struct {
@@ -465,11 +479,52 @@ func (a *ACPAgent) getOrCreateSession(ctx context.Context, conversationID string
 		return "", false, fmt.Errorf("parse session result: %w", err)
 	}
 
+	a.applySessionModel(ctx, sessionResult)
+
 	a.mu.Lock()
 	a.sessions[conversationID] = sessionResult.SessionID
 	a.mu.Unlock()
 
 	return sessionResult.SessionID, true, nil
+}
+
+// modelConfigOptionID returns the id of the session's model config option, or ""
+// when the agent does not expose one.
+func modelConfigOptionID(options []sessionConfigOption) string {
+	for _, opt := range options {
+		if opt.Category == "model" {
+			return opt.ID
+		}
+	}
+	for _, opt := range options {
+		if opt.ID == "model" {
+			return opt.ID
+		}
+	}
+	return ""
+}
+
+// applySessionModel selects the configured model on a new session via the
+// standard session/set_config_option method. Failure is logged, not fatal:
+// the session keeps the agent's default model.
+func (a *ACPAgent) applySessionModel(ctx context.Context, session newSessionResult) {
+	if a.model == "" {
+		return
+	}
+	configID := modelConfigOptionID(session.ConfigOptions)
+	if configID == "" {
+		log.Printf("[acp] agent exposes no model config option; ignoring model=%s (session=%s)", a.model, session.SessionID)
+		return
+	}
+	if _, err := a.call(ctx, "session/set_config_option", setConfigOptionParams{
+		SessionID: session.SessionID,
+		ConfigID:  configID,
+		Value:     a.model,
+	}); err != nil {
+		log.Printf("[acp] failed to set model=%s (session=%s): %v", a.model, session.SessionID, err)
+		return
+	}
+	log.Printf("[acp] set model=%s (session=%s)", a.model, session.SessionID)
 }
 
 // --- Codex app-server protocol ---
