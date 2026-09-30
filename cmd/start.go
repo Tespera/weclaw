@@ -12,13 +12,13 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/fastclaw-ai/weclaw/agent"
-	"github.com/fastclaw-ai/weclaw/api"
-	"github.com/fastclaw-ai/weclaw/config"
-	"github.com/fastclaw-ai/weclaw/ilink"
-	"github.com/fastclaw-ai/weclaw/messaging"
 	"github.com/mdp/qrterminal/v3"
 	"github.com/spf13/cobra"
+	"weclaw/agent"
+	"weclaw/api"
+	"weclaw/config"
+	"weclaw/ilink"
+	"weclaw/messaging"
 )
 
 var (
@@ -51,11 +51,32 @@ func runStart(cmd *cobra.Command, args []string) error {
 				return fmt.Errorf("login failed: %w", err)
 			}
 		}
+		if serviceInstalled() {
+			if err := serviceStart(); err != nil {
+				return err
+			}
+			if pid := waitServicePid(5 * time.Second); pid > 0 {
+				fmt.Printf("weclaw service running (pid=%d)\n", pid)
+			}
+			fmt.Printf("Log: %s\n", logFile())
+			return nil
+		}
 		return runDaemon()
 	}
 
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
+
+	// Single-instance guard: two bridges on one account would race for the
+	// same iLink message queue.
+	if err := os.MkdirAll(weclawDir(), 0o700); err != nil {
+		return fmt.Errorf("create weclaw dir: %w", err)
+	}
+	lock, err := acquireInstanceLock(lockFile())
+	if err != nil {
+		return err
+	}
+	defer lock.Release()
 
 	// Load all accounts
 	accounts, err := ilink.LoadAllCredentials()
@@ -341,6 +362,10 @@ func weclawDir() string {
 
 func pidFile() string {
 	return filepath.Join(weclawDir(), "weclaw.pid")
+}
+
+func lockFile() string {
+	return filepath.Join(weclawDir(), "weclaw.lock")
 }
 
 func logFile() string {

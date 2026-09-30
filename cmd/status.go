@@ -12,20 +12,24 @@ func init() {
 
 var statusCmd = &cobra.Command{
 	Use:   "status",
-	Short: "Check if weclaw is running in background",
+	Short: "Show whether the weclaw bridge is running",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		pid, err := readPid()
-		if err != nil {
-			fmt.Println("weclaw is not running")
+		mode := "background"
+		if serviceInstalled() {
+			mode = "service (" + plistPath() + ")"
+		}
+		// The instance lock is authoritative: it is held exactly while a bridge runs.
+		if pid, running := lockHolderPid(lockFile()); running {
+			fmt.Printf("weclaw is running (pid=%d, mode=%s)\n", pid, mode)
+			fmt.Printf("Log: %s\n", logFile())
 			return nil
 		}
-
-		if processExists(pid) {
-			fmt.Printf("weclaw is running (pid=%d)\n", pid)
+		if pid, err := readPid(); err == nil && processExists(pid) {
+			fmt.Printf("weclaw is running (pid=%d, mode=%s)\n", pid, mode)
 			fmt.Printf("Log: %s\n", logFile())
-		} else {
-			fmt.Println("weclaw is not running (stale pid file)")
+			return nil
 		}
+		fmt.Printf("weclaw is not running (mode=%s)\n", mode)
 		return nil
 	},
 }

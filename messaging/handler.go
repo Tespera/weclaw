@@ -10,9 +10,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/fastclaw-ai/weclaw/agent"
-	"github.com/fastclaw-ai/weclaw/ilink"
 	"github.com/google/uuid"
+	"weclaw/agent"
+	"weclaw/ilink"
 )
 
 // AgentFactory creates an agent by config name. Returns nil if the name is unknown.
@@ -39,9 +39,9 @@ type Handler struct {
 	customAliases map[string]string      // custom alias -> agent name (from config)
 	factory       AgentFactory
 	saveDefault   SaveDefaultFunc
-	contextTokens sync.Map   // map[userID]contextToken
-	saveDir       string     // directory to save images/files to
-	seenMsgs      sync.Map   // map[int64]time.Time — dedup by message_id
+	contextTokens sync.Map // map[userID]contextToken
+	saveDir       string   // directory to save images/files to
+	seenMsgs      sync.Map // map[int64]time.Time — dedup by message_id
 }
 
 // NewHandler creates a new message handler.

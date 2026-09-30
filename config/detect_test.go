@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"os/exec"
+	"path/filepath"
 	"testing"
 )
 
@@ -75,8 +76,16 @@ func TestDetectAndConfigure_StrippedPath(t *testing.T) {
 	if !ok {
 		t.Fatal("expected claude to be detected via login shell fallback")
 	}
-	if agent.Type != "cli" {
-		t.Fatalf("expected type=cli, got %s", agent.Type)
+	// Either claude-agent-acp (acp) or claude (cli) may be installed; the point
+	// is that the login-shell fallback resolves a real absolute path.
+	if agent.Type != "cli" && agent.Type != "acp" {
+		t.Fatalf("expected type cli or acp, got %s", agent.Type)
+	}
+	if !filepath.IsAbs(agent.Command) {
+		t.Fatalf("expected absolute command path, got %q", agent.Command)
+	}
+	if _, err := os.Stat(agent.Command); err != nil {
+		t.Fatalf("detected command does not exist: %v", err)
 	}
 	t.Logf("detected claude: type=%s, command=%s", agent.Type, agent.Command)
 }

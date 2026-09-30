@@ -1,207 +1,73 @@
 package cmd
 
 import (
-	"encoding/json"
+	"errors"
 	"fmt"
-	"io"
-	"log"
-	"net/http"
 	"os"
 	"os/exec"
-	"runtime"
-	"strings"
-	"time"
+	"path/filepath"
 
 	"github.com/spf13/cobra"
 )
 
-const githubRepo = "fastclaw-ai/weclaw"
+// SourceDir is the source checkout this binary was built from, set at build
+// time via -ldflags. `weclaw update` rebuilds and reinstalls from it.
+var SourceDir = ""
 
 func init() {
 	rootCmd.AddCommand(updateCmd)
-	rootCmd.AddCommand(upgradeCmd)
-	rootCmd.AddCommand(versionCmd)
-}
-
-var versionCmd = &cobra.Command{
-	Use:   "version",
-	Short: "Print the current version",
-	Run: func(cmd *cobra.Command, args []string) {
-		fmt.Printf("weclaw %s (%s/%s)\n", Version, runtime.GOOS, runtime.GOARCH)
-	},
 }
 
 var updateCmd = &cobra.Command{
 	Use:   "update",
-	Short: "Update weclaw to the latest version and restart",
-	RunE:  runUpdate,
-}
+	Short: "Rebuild and reinstall weclaw from its source checkout",
+	Long: `Rebuild weclaw from the source checkout it was built from and reinstall it.
 
-var upgradeCmd = &cobra.Command{
-	Use:   "upgrade",
-	Short: "Update weclaw to the latest version and restart (alias for update)",
-	RunE:  runUpdate,
-}
-
-func runUpdate(cmd *cobra.Command, args []string) error {
-	// 1. Get latest version
-	fmt.Println("Checking for updates...")
-	latest, err := getLatestVersion()
-	if err != nil {
-		return fmt.Errorf("failed to check latest version: %w", err)
-	}
-
-	if latest == Version {
-		fmt.Printf("Already up to date (%s)\n", Version)
-		return nil
-	}
-
-	fmt.Printf("Current: %s -> Latest: %s\n", Version, latest)
-
-	// 2. Download new binary
-	goos := runtime.GOOS
-	goarch := runtime.GOARCH
-	filename := fmt.Sprintf("weclaw_%s_%s", goos, goarch)
-	url := fmt.Sprintf("https://github.com/%s/releases/download/%s/%s", githubRepo, latest, filename)
-
-	fmt.Printf("Downloading %s...\n", url)
-	tmpFile, err := downloadFile(url)
-	if err != nil {
-		return fmt.Errorf("download failed: %w", err)
-	}
-	defer os.Remove(tmpFile)
-
-	// 3. Replace current binary
-	exePath, err := os.Executable()
-	if err != nil {
-		return fmt.Errorf("find executable: %w", err)
-	}
-	// Resolve symlinks
-	if resolved, err := resolveSymlink(exePath); err == nil {
-		exePath = resolved
-	}
-
-	if err := replaceBinary(tmpFile, exePath); err != nil {
-		return fmt.Errorf("replace binary: %w", err)
-	}
-
-	// Clear macOS quarantine/provenance attributes to avoid Gatekeeper killing the binary
-	if runtime.GOOS == "darwin" {
-		exec.Command("xattr", "-d", "com.apple.quarantine", exePath).Run()
-		exec.Command("xattr", "-d", "com.apple.provenance", exePath).Run()
-	}
-
-	fmt.Printf("Updated to %s\n", latest)
-
-	// 4. Restart if running in background
-	pid, pidErr := readPid()
-	if pidErr == nil && processExists(pid) {
-		fmt.Println("Stopping old process...")
-		if p, err := os.FindProcess(pid); err == nil {
-			p.Signal(os.Interrupt)
-		}
-		// Wait for old process to exit
-		for i := 0; i < 20; i++ {
-			if !processExists(pid) {
-				break
-			}
-			time.Sleep(500 * time.Millisecond)
-		}
-		os.Remove(pidFile())
-
-		fmt.Println("Starting new version...")
-		if err := runDaemon(); err != nil {
-			log.Printf("Failed to restart: %v", err)
-			fmt.Println("Update complete. Please run 'weclaw start' manually.")
-		}
-	} else {
-		fmt.Println("Update complete. Run 'weclaw start' to start.")
-	}
-
-	return nil
-}
-
-func getLatestVersion() (string, error) {
-	resp, err := http.Get(fmt.Sprintf("https://api.github.com/repos/%s/releases/latest", githubRepo))
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("GitHub API returned %d", resp.StatusCode)
-	}
-
-	var release struct {
-		TagName string `json:"tag_name"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&release); err != nil {
-		return "", err
-	}
-	return release.TagName, nil
-}
-
-func downloadFile(url string) (string, error) {
-	resp, err := http.Get(url)
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("HTTP %d", resp.StatusCode)
-	}
-
-	tmp, err := os.CreateTemp("", "weclaw-update-*")
-	if err != nil {
-		return "", err
-	}
-
-	if _, err := io.Copy(tmp, resp.Body); err != nil {
-		tmp.Close()
-		os.Remove(tmp.Name())
-		return "", err
-	}
-	tmp.Close()
-
-	if err := os.Chmod(tmp.Name(), 0o755); err != nil {
-		os.Remove(tmp.Name())
-		return "", err
-	}
-
-	return tmp.Name(), nil
-}
-
-func replaceBinary(src, dst string) error {
-	// Check if we can write directly
-	if err := os.Rename(src, dst); err == nil {
-		return nil
-	}
-
-	// Try with sudo on Unix
-	if runtime.GOOS != "windows" {
-		fmt.Printf("Installing to %s (requires sudo)...\n", dst)
-		cmd := exec.Command("sudo", "cp", src, dst)
-		cmd.Stdin = os.Stdin
-		cmd.Stdout = os.Stdout
-		cmd.Stderr = os.Stderr
-		return cmd.Run()
-	}
-
-	return fmt.Errorf("cannot write to %s", dst)
-}
-
-func resolveSymlink(path string) (string, error) {
-	for {
-		target, err := os.Readlink(path)
+If the checkout's branch tracks a remote, it is fast-forwarded first. The
+install step replaces the binary atomically and restarts a running bridge.`,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		src, err := updateSourceDir()
 		if err != nil {
-			return path, nil
+			return err
 		}
-		if !strings.HasPrefix(target, "/") {
-			// Relative symlink
-			dir := path[:strings.LastIndex(path, "/")+1]
-			target = dir + target
+		fmt.Printf("Source: %s\n", src)
+
+		if run(src, "git", "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}") == nil {
+			fmt.Println("Pulling latest changes...")
+			if err := runVisible(src, "git", "pull", "--ff-only"); err != nil {
+				return fmt.Errorf("git pull: %w", err)
+			}
+		} else {
+			fmt.Println("No upstream remote configured; building local HEAD.")
 		}
-		path = target
+
+		fmt.Println("Building and installing...")
+		if err := runVisible(src, "make", "install"); err != nil {
+			return fmt.Errorf("make install: %w", err)
+		}
+		return nil
+	},
+}
+
+func updateSourceDir() (string, error) {
+	if SourceDir == "" {
+		return "", errors.New("this binary was not built with a source directory; build it with 'make install' from the weclaw checkout")
 	}
+	if _, err := os.Stat(filepath.Join(SourceDir, "go.mod")); err != nil {
+		return "", fmt.Errorf("source checkout not found at %s: %w", SourceDir, err)
+	}
+	return SourceDir, nil
+}
+
+func run(dir, name string, args ...string) error {
+	c := exec.Command(name, args...)
+	c.Dir = dir
+	return c.Run()
+}
+
+func runVisible(dir, name string, args ...string) error {
+	c := exec.Command(name, args...)
+	c.Dir = dir
+	c.Stdout, c.Stderr = os.Stdout, os.Stderr
+	return c.Run()
 }

@@ -6,9 +6,9 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/fastclaw-ai/weclaw/ilink"
-	"github.com/fastclaw-ai/weclaw/messaging"
 	"github.com/spf13/cobra"
+	"weclaw/ilink"
+	"weclaw/messaging"
 )
 
 var (

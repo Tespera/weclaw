@@ -15,7 +15,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/fastclaw-ai/weclaw/ilink"
+	"weclaw/ilink"
 )
 
 const cdnBaseURL = "https://novac2c.cdn.weixin.qq.com/c2c"
