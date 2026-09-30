@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strconv"
+	"strings"
 	"text/template"
 	"time"
 )
@@ -153,6 +154,41 @@ func xmlEscape(s string) string {
 	return buf.String()
 }
 
+// servicePath turns the installing shell's PATH into one fit for a login
+// service: absolute, existing directories only, no per-session temp dirs (they
+// vanish after the shell exits), no duplicates, and the system dirs always last.
+func servicePath(raw string) string {
+	tmp := filepath.Clean(os.TempDir())
+	seen := map[string]bool{}
+	var dirs []string
+	add := func(d string) {
+		d = filepath.Clean(d)
+		if seen[d] {
+			return
+		}
+		seen[d] = true
+		dirs = append(dirs, d)
+	}
+	for _, d := range filepath.SplitList(raw) {
+		if d == "" || !filepath.IsAbs(d) {
+			continue
+		}
+		c := filepath.Clean(d)
+		if c == tmp || strings.HasPrefix(c, tmp+"/") ||
+			strings.HasPrefix(c, "/var/folders/") || strings.HasPrefix(c, "/private/var/folders/") {
+			continue
+		}
+		if fi, err := os.Stat(c); err != nil || !fi.IsDir() {
+			continue
+		}
+		add(c)
+	}
+	for _, d := range []string{"/usr/bin", "/bin", "/usr/sbin", "/sbin"} {
+		add(d)
+	}
+	return strings.Join(dirs, string(os.PathListSeparator))
+}
+
 // serviceInstall writes the LaunchAgent for the running binary and loads it.
 // PATH is captured from the installing shell so agents launched by the bridge
 // (node-based ACP adapters, claude, codex) resolve the same way they do there.
@@ -174,7 +210,7 @@ func serviceInstall() error {
 	content, err := renderPlist(plistParams{
 		Label:   launchdLabel,
 		Exe:     exe,
-		Path:    os.Getenv("PATH"),
+		Path:    servicePath(os.Getenv("PATH")),
 		Home:    home,
 		WorkDir: weclawDir(),
 		Log:     logFile(),

@@ -166,3 +166,42 @@ func TestRenderPlistIsValidAndEscaped(t *testing.T) {
 		t.Fatalf("plutil -lint: %v: %s", err, out)
 	}
 }
+
+func TestServicePath(t *testing.T) {
+	tmp := t.TempDir() // exists, but is a per-session temp dir
+	raw := strings.Join([]string{
+		tmp,
+		"/opt/homebrew/bin",
+		"relative/bin",
+		"/usr/local/bin",
+		"/nonexistent/weclaw-test",
+		"/opt/homebrew/bin/", // duplicate after Clean
+		"",
+		"/var/folders/xx/T/otty-shell-1/bin",
+		"/bin",
+	}, ":")
+	got := strings.Split(servicePath(raw), ":")
+
+	for _, bad := range []string{tmp, "relative/bin", "/nonexistent/weclaw-test", "/var/folders/xx/T/otty-shell-1/bin"} {
+		for _, d := range got {
+			if d == bad {
+				t.Errorf("servicePath kept %q: %v", bad, got)
+			}
+		}
+	}
+	count := map[string]int{}
+	for _, d := range got {
+		count[d]++
+		if count[d] > 1 {
+			t.Errorf("duplicate %q in %v", d, got)
+		}
+	}
+	for _, want := range []string{"/usr/bin", "/bin", "/usr/sbin", "/sbin"} {
+		if count[want] != 1 {
+			t.Errorf("system dir %q missing from %v", want, got)
+		}
+	}
+	if _, err := os.Stat("/opt/homebrew/bin"); err == nil && got[0] != "/opt/homebrew/bin" {
+		t.Errorf("order not preserved, got %v", got)
+	}
+}
