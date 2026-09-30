@@ -29,8 +29,8 @@ type agentCandidate struct {
 // are preferred. E.g. claude ACP is tried before claude CLI.
 var agentCandidates = []agentCandidate{
 	// claude: prefer ACP, fallback to CLI
-	{Name: "claude", Binary: "claude-agent-acp", Type: "acp", Model: "sonnet"},
-	{Name: "claude", Binary: "claude", Type: "cli", Model: "sonnet"},
+	{Name: "claude", Binary: "claude-agent-acp", Type: "acp", Model: "opus"},
+	{Name: "claude", Binary: "claude", Type: "cli", Model: "opus"},
 	// codex: prefer ACP, fallback to CLI
 	{Name: "codex", Binary: "codex-acp", Type: "acp", Model: ""},
 	{Name: "codex", Binary: "codex", Args: []string{"app-server", "--listen", "stdio://"}, CheckArgs: []string{"app-server", "--help"}, Type: "acp", Model: ""},

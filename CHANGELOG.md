@@ -19,6 +19,7 @@
 
 ### 新增
 - ACP Agent 的 `model` 配置生效：新会话通过标准的 `session/set_config_option` 设置模型（此前只对 Codex 生效）
+- 自动探测到的 Claude（ACP/CLI）默认模型由 `sonnet` 改为 `opus`
 - ACP Agent 新增 `mode` 配置（如 `bypassPermissions`，等价于 `claude --dangerously-skip-permissions`），与 `model` 同样通过 `session/set_config_option` 应用到新会话
 - 退出时停止 Agent 子进程；首次运行之后不再为未安装的 Agent 逐个启动登录 shell 探测（此前每次启动要多花约 10 秒）
 - 单实例锁：`~/.weclaw/weclaw.lock` 上的 `flock`，防止两个 bridge 抢同一个微信消息队列

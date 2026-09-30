@@ -161,7 +161,7 @@ curl -X POST http://127.0.0.1:18011/api/send \
       "env": {
         "ANTHROPIC_API_KEY": "sk-ant-xxx"
       },
-      "model": "sonnet"
+      "model": "opus"
     },
     "codex": {
       "type": "acp",

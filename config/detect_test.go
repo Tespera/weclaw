@@ -114,3 +114,11 @@ func TestDetectAndConfigure_LoginShellOnlyOnFirstRun(t *testing.T) {
 		t.Fatal("first run should fall back to the login shell")
 	}
 }
+
+func TestClaudeCandidatesDefaultToOpus(t *testing.T) {
+	for _, c := range agentCandidates {
+		if c.Name == "claude" && c.Model != "opus" {
+			t.Errorf("claude candidate %s (%s) defaults to model %q, want opus", c.Binary, c.Type, c.Model)
+		}
+	}
+}
