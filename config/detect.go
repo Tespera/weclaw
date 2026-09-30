@@ -62,13 +62,23 @@ var defaultOrder = []string{
 func DetectAndConfigure(cfg *Config) bool {
 	modified := false
 
+	// The login-shell fallback spawns an interactive shell per missing binary
+	// (seconds each). It exists for first-run setup, where agents may only be
+	// on an nvm/mise PATH; once agents are configured, every start would pay it
+	// again for each agent that simply isn't installed. After first run, look
+	// only in PATH (the service PATH is captured from the user's shell).
+	find := lookPath
+	if len(cfg.Agents) > 0 {
+		find = exec.LookPath
+	}
+
 	for _, candidate := range agentCandidates {
 		// Skip if this agent name is already configured
 		if _, exists := cfg.Agents[candidate.Name]; exists {
 			continue
 		}
 
-		path, err := lookPath(candidate.Binary)
+		path, err := find(candidate.Binary)
 		if err != nil {
 			continue
 		}
@@ -252,6 +262,11 @@ func agentExists(cfg *Config, name string) bool {
 	return ok
 }
 
+// shellWhich resolves binary through an interactive login shell. Replaced in tests.
+var shellWhich = func(shell, binary string) ([]byte, error) {
+	return exec.Command(shell, "-lic", "which "+binary).Output()
+}
+
 // lookPath finds a binary by name. It first tries exec.LookPath (fast, uses
 // current PATH). If that fails, it falls back to resolving via a login shell
 // which sources the user's profile (~/.zshrc, ~/.bashrc) — this picks up
@@ -268,7 +283,7 @@ func lookPath(binary string) (string, error) {
 	if runtime.GOOS != "darwin" {
 		shell = "bash"
 	}
-	out, err := exec.Command(shell, "-lic", "which "+binary).Output()
+	out, err := shellWhich(shell, binary)
 	if err != nil {
 		return "", fmt.Errorf("not found: %s", binary)
 	}

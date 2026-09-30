@@ -89,3 +89,28 @@ func TestDetectAndConfigure_StrippedPath(t *testing.T) {
 	}
 	t.Logf("detected claude: type=%s, command=%s", agent.Type, agent.Command)
 }
+
+// After first run, detection must not spawn a login shell for every agent that
+// isn't installed: that cost ~10s on each bridge start.
+func TestDetectAndConfigure_LoginShellOnlyOnFirstRun(t *testing.T) {
+	t.Setenv("PATH", t.TempDir()) // nothing resolvable via PATH
+	calls := 0
+	orig := shellWhich
+	shellWhich = func(shell, binary string) ([]byte, error) {
+		calls++
+		return nil, os.ErrNotExist
+	}
+	t.Cleanup(func() { shellWhich = orig })
+
+	cfg := DefaultConfig()
+	cfg.Agents["claude"] = AgentConfig{Type: "acp", Command: "/opt/homebrew/bin/claude-agent-acp"}
+	DetectAndConfigure(cfg)
+	if calls != 0 {
+		t.Fatalf("configured setup spawned %d login shells, want 0", calls)
+	}
+
+	DetectAndConfigure(DefaultConfig())
+	if calls == 0 {
+		t.Fatal("first run should fall back to the login shell")
+	}
+}

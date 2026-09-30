@@ -139,6 +139,26 @@ func (h *Handler) getAgent(ctx context.Context, name string) (agent.Agent, error
 }
 
 // getDefaultAgent returns the default agent (may be nil if not ready yet).
+// stopper is implemented by agents that own a long-running subprocess.
+type stopper interface{ Stop() }
+
+// StopAgents stops every agent subprocess. Call on shutdown: otherwise the
+// ACP adapter and its children outlive the bridge (orphaned in background
+// mode; under launchd they delay the job's exit and hence its restart).
+func (h *Handler) StopAgents() {
+	h.mu.RLock()
+	agents := make([]agent.Agent, 0, len(h.agents))
+	for _, ag := range h.agents {
+		agents = append(agents, ag)
+	}
+	h.mu.RUnlock()
+	for _, ag := range agents {
+		if s, ok := ag.(stopper); ok {
+			s.Stop()
+		}
+	}
+}
+
 func (h *Handler) getDefaultAgent() agent.Agent {
 	h.mu.RLock()
 	defer h.mu.RUnlock()

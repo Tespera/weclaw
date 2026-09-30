@@ -205,6 +205,8 @@ func runStart(cmd *cobra.Command, args []string) error {
 
 	wg.Wait()
 	log.Println("All monitors stopped")
+	handler.StopAgents()
+	log.Println("Agents stopped")
 	return nil
 }
 
