@@ -1,8 +1,8 @@
 # WeClaw
 
-[English](README.md)
-
 微信 AI Agent 桥接器 — 将微信消息接入 AI Agent（Claude、Codex、Gemini、Kimi 等）。
+
+> **关于本仓库**：这是 [fastclaw-ai/weclaw](https://github.com/fastclaw-ai/weclaw) 的独立维护版本，自 v0.9.0 起不再跟随上游（上游 2026-04 后停止更新）。基于上游 v0.7.1，合入了上游 `main`/`dev` 分支中的 Codex `/new` 修复、图片消息、配置覆盖修复，并修复了 ACP 权限审批与模型配置、增加了单实例锁和 launchd 服务管理。变更见 [CHANGELOG.md](CHANGELOG.md)。
 
 > 本项目参考 [@tencent-weixin/openclaw-weixin](https://npmx.dev/package/@tencent-weixin/openclaw-weixin) 实现，仅限个人学习，勿做他用。
 
@@ -12,15 +12,20 @@
 
 ## 快速开始
 
-```bash
-# 一键安装
-curl -sSL https://raw.githubusercontent.com/fastclaw-ai/weclaw/main/install.sh | sh
+需要 Go 1.25+。
 
-# 启动（首次运行会弹出微信扫码登录）
+```bash
+# 编译并安装到 ~/.local/bin（可用 PREFIX 覆盖）
+make install
+
+# 首次启动：弹出微信扫码登录，之后后台运行
 weclaw start
+
+# 推荐：注册为登录服务（开机自启、崩溃自动拉起）
+weclaw service install
 ```
 
-就这么简单。首次启动时，WeClaw 会：
+首次启动时，WeClaw 会：
 
 1. 显示二维码 — 用微信扫码登录
 2. 自动检测已安装的 AI Agent（Claude、Codex、Gemini 等）
@@ -28,16 +33,6 @@ weclaw start
 4. 开始接收和回复微信消息
 
 使用 `weclaw login` 可以添加更多微信账号。
-
-### 其他安装方式
-
-```bash
-# 通过 Go 安装
-go install github.com/fastclaw-ai/weclaw@latest
-
-# 通过 Docker
-docker run -it -v ~/.weclaw:/root/.weclaw ghcr.io/fastclaw-ai/weclaw start
-```
 
 ## 架构
 
@@ -239,39 +234,30 @@ curl -X POST http://127.0.0.1:18011/api/send \
 
 > **注意：** 这些参数会跳过安全检查，请了解风险后再启用。ACP 模式的 Agent 会自动处理权限，无需配置。
 
-## 后台运行
+## 运行与服务
 
 ```bash
-# 启动（默认后台运行）
-weclaw start
-
-# 查看状态
-weclaw status
-
-# 停止
-weclaw stop
-
-# 前台运行（调试用）
-weclaw start -f
+weclaw start      # 启动（后台运行；已注册服务时交给 launchd）
+weclaw status     # 查看状态
+weclaw restart    # 重启
+weclaw stop       # 停止
+weclaw start -f   # 前台运行（调试用）
 ```
 
 日志输出到 `~/.weclaw/weclaw.log`。
 
-### 系统服务（开机自启）
+同一时间只允许一个 bridge 运行：进程启动时对 `~/.weclaw/weclaw.lock` 加 `flock`，拿不到锁就报错退出（锁随进程退出自动释放，崩溃也不会残留）。两个实例会抢同一个微信消息队列，所以这是硬约束。
 
-**macOS (launchd)：**
-
-```bash
-cp service/com.fastclaw.weclaw.plist ~/Library/LaunchAgents/
-launchctl load ~/Library/LaunchAgents/com.fastclaw.weclaw.plist
-```
-
-**Linux (systemd)：**
+### 登录服务（macOS，推荐）
 
 ```bash
-sudo cp service/weclaw.service /etc/systemd/system/
-sudo systemctl enable --now weclaw
+weclaw service install     # 生成 ~/Library/LaunchAgents/com.weclaw.bridge.plist 并启动
+weclaw service uninstall   # 停止并移除
 ```
+
+注册后 `start/stop/restart` 自动改走 `launchctl`，不再自行派生后台进程。`stop` 会卸载任务，下次登录或 `weclaw start` 时恢复。plist 会记录安装时 shell 的 `PATH`，保证 node（ACP 适配器）、claude、codex 等能被找到；这些工具的安装位置变了，重新执行一次 `weclaw service install` 即可。
+
+Linux 暂不提供服务管理，可自行用 systemd 运行 `weclaw start --foreground`（必须带 `--foreground`，否则进程会派生后台后立即退出，被 systemd 反复拉起）。
 
 ## Docker
 
@@ -297,25 +283,16 @@ docker logs -f weclaw
 > 默认镜像只包含 WeClaw 本体。如需使用 ACP/CLI Agent，请挂载二进制文件或构建自定义镜像。
 > HTTP 模式开箱即用。
 
-## 发版
+## 更新与版本
 
 ```bash
-# 打 tag 触发 GitHub Actions 自动构建发版
-git tag v0.1.0
-git push origin v0.1.0
+weclaw update     # 从源码仓库重新编译安装（有远程则先 git pull --ff-only），运行中会自动重启
+weclaw version    # 查看当前版本
 ```
 
-自动构建 `darwin/linux/windows` x `amd64/arm64` 的二进制，创建 GitHub Release 并上传所有产物和校验文件。
+`update` 使用编译时记录的源码目录（`make install` 自动写入），等价于在仓库里执行 `make install`。安装采用"写临时文件再改名"，不会原地覆盖正在运行的二进制。
 
-## 更新
-
-```bash
-# 更新到最新版本（运行中会自动重启）
-weclaw update
-
-# 查看当前版本
-weclaw version
-```
+版本号来自 git tag（`git describe`）。发版流程：更新 `CHANGELOG.md` → 提交 → `git tag vX.Y.Z` → `make install`。
 
 ## 开发
 
@@ -323,22 +300,19 @@ weclaw version
 # 热重载
 make dev
 
-# 编译
-go build -o weclaw .
+# 编译到 ./bin/weclaw
+make build
 
-# 运行
-./weclaw start
+# 测试
+make test
+
+# ACP 端到端测试（真实调用 claude-agent-acp，默认跳过）
+WECLAW_ACP_E2E=1 go test ./agent -run TestACPModelE2E -v
 ```
 
-## 贡献者
+## 致谢
 
-<a href="https://github.com/fastclaw-ai/weclaw/graphs/contributors">
-  <img src="https://contrib.rocks/image?repo=fastclaw-ai/weclaw" />
-</a>
-
-## Star 趋势
-
-[![Star History Chart](https://api.star-history.com/svg?repos=fastclaw-ai/weclaw&type=Timeline)](https://star-history.com/#fastclaw-ai/weclaw&Timeline)
+基于 [fastclaw-ai/weclaw](https://github.com/fastclaw-ai/weclaw) 及其[贡献者](https://github.com/fastclaw-ai/weclaw/graphs/contributors)的工作。
 
 ## 许可证
 
