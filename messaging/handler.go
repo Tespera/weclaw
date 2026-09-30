@@ -764,6 +764,9 @@ func (h *Handler) handleImageMessage(ctx context.Context, client *ilink.Client, 
 	}()
 
 	// Try to send image to agent
+	h.mu.RLock()
+	defaultName := h.defaultName
+	h.mu.RUnlock()
 	ag := h.getDefaultAgent()
 	if ag == nil {
 		log.Printf("[handler] no agent ready, skipping image from %s", msg.FromUserID)
@@ -785,7 +788,7 @@ func (h *Handler) handleImageMessage(ctx context.Context, client *ilink.Client, 
 		reply = fmt.Sprintf("Error: %v", err)
 	}
 
-	h.sendReplyWithMedia(ctx, client, msg, reply, clientID)
+	h.sendReplyWithMedia(ctx, client, msg, defaultName, reply, clientID)
 }
 
 func detectImageMime(data []byte) string {
