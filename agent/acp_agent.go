@@ -19,13 +19,15 @@ import (
 
 // ACPAgent communicates with ACP-compatible agents (claude-agent-acp, codex-acp, cursor agent, etc.) via stdio JSON-RPC 2.0.
 type ACPAgent struct {
-	command      string
-	args         []string
-	model        string
-	systemPrompt string
-	cwd          string
-	env          map[string]string
-	protocol     string // "legacy_acp" or "codex_app_server"
+	command            string
+	args               []string
+	model              string
+	mode               string
+	permissionRequests atomic.Int64 // permission prompts received; 0 under bypassPermissions
+	systemPrompt       string
+	cwd                string
+	env                map[string]string
+	protocol           string // "legacy_acp" or "codex_app_server"
 
 	mu       sync.Mutex
 	cmd      *exec.Cmd
@@ -56,6 +58,7 @@ type ACPAgentConfig struct {
 	Command      string   // path to ACP agent binary (claude-agent-acp, codex-acp, cursor agent, etc.)
 	Args         []string // extra args for command (e.g. ["acp"] for cursor)
 	Model        string
+	Mode         string // session mode applied to new sessions, e.g. "bypassPermissions"
 	SystemPrompt string
 	Cwd          string            // working directory
 	Env          map[string]string // extra environment variables
@@ -216,6 +219,7 @@ func NewACPAgent(cfg ACPAgentConfig) *ACPAgent {
 		command:      cfg.Command,
 		args:         cfg.Args,
 		model:        cfg.Model,
+		mode:         cfg.Mode,
 		systemPrompt: cfg.SystemPrompt,
 		cwd:          cfg.Cwd,
 		env:          cfg.Env,
@@ -612,7 +616,7 @@ func (a *ACPAgent) getOrCreateSession(ctx context.Context, conversationID string
 		return "", false, fmt.Errorf("parse session result: %w", err)
 	}
 
-	a.applySessionModel(ctx, sessionResult)
+	a.applySessionConfig(ctx, sessionResult)
 
 	a.mu.Lock()
 	a.sessions[conversationID] = sessionResult.SessionID
@@ -621,43 +625,49 @@ func (a *ACPAgent) getOrCreateSession(ctx context.Context, conversationID string
 	return sessionResult.SessionID, true, nil
 }
 
-// modelConfigOptionID returns the id of the session's model config option, or ""
-// when the agent does not expose one.
-func modelConfigOptionID(options []sessionConfigOption) string {
+// configOptionID returns the id of the session config option for category
+// ("model", "mode", ...), falling back to an option whose id equals the
+// category, or "" when the agent exposes none.
+func configOptionID(options []sessionConfigOption, category string) string {
 	for _, opt := range options {
-		if opt.Category == "model" {
+		if opt.Category == category {
 			return opt.ID
 		}
 	}
 	for _, opt := range options {
-		if opt.ID == "model" {
+		if opt.ID == category {
 			return opt.ID
 		}
 	}
 	return ""
 }
 
-// applySessionModel selects the configured model on a new session via the
-// standard session/set_config_option method. Failure is logged, not fatal:
-// the session keeps the agent's default model.
-func (a *ACPAgent) applySessionModel(ctx context.Context, session newSessionResult) {
-	if a.model == "" {
-		return
+// applySessionConfig applies the configured model and mode to a new session
+// via the standard session/set_config_option method. Failures are logged, not
+// fatal: the session keeps the agent's defaults.
+func (a *ACPAgent) applySessionConfig(ctx context.Context, session newSessionResult) {
+	for _, c := range []struct{ category, value string }{
+		{"model", a.model},
+		{"mode", a.mode},
+	} {
+		if c.value == "" {
+			continue
+		}
+		configID := configOptionID(session.ConfigOptions, c.category)
+		if configID == "" {
+			log.Printf("[acp] agent exposes no %s config option; ignoring %s=%s (session=%s)", c.category, c.category, c.value, session.SessionID)
+			continue
+		}
+		if _, err := a.call(ctx, "session/set_config_option", setConfigOptionParams{
+			SessionID: session.SessionID,
+			ConfigID:  configID,
+			Value:     c.value,
+		}); err != nil {
+			log.Printf("[acp] failed to set %s=%s (session=%s): %v", c.category, c.value, session.SessionID, err)
+			continue
+		}
+		log.Printf("[acp] set %s=%s (session=%s)", c.category, c.value, session.SessionID)
 	}
-	configID := modelConfigOptionID(session.ConfigOptions)
-	if configID == "" {
-		log.Printf("[acp] agent exposes no model config option; ignoring model=%s (session=%s)", a.model, session.SessionID)
-		return
-	}
-	if _, err := a.call(ctx, "session/set_config_option", setConfigOptionParams{
-		SessionID: session.SessionID,
-		ConfigID:  configID,
-		Value:     a.model,
-	}); err != nil {
-		log.Printf("[acp] failed to set model=%s (session=%s): %v", a.model, session.SessionID, err)
-		return
-	}
-	log.Printf("[acp] set model=%s (session=%s)", a.model, session.SessionID)
 }
 
 // --- Codex app-server protocol ---
@@ -1113,6 +1123,7 @@ func (a *ACPAgent) handlePermissionRequest(raw string) {
 		return
 	}
 
+	a.permissionRequests.Add(1)
 	optionID := pickAllowOption(req.Params.Options)
 
 	// Send response

@@ -19,6 +19,8 @@
 
 ### 新增
 - ACP Agent 的 `model` 配置生效：新会话通过标准的 `session/set_config_option` 设置模型（此前只对 Codex 生效）
+- ACP Agent 新增 `mode` 配置（如 `bypassPermissions`，等价于 `claude --dangerously-skip-permissions`），与 `model` 同样通过 `session/set_config_option` 应用到新会话
+- 退出时停止 Agent 子进程；首次运行之后不再为未安装的 Agent 逐个启动登录 shell 探测（此前每次启动要多花约 10 秒）
 - 单实例锁：`~/.weclaw/weclaw.lock` 上的 `flock`，防止两个 bridge 抢同一个微信消息队列
 - `weclaw service install|uninstall`：生成并管理 launchd LaunchAgent（PATH 取自安装时的 shell，剔除临时目录、不存在的目录和重复项）；注册后 `start/stop/restart/status` 走 `launchctl`
 - `weclaw update` 改为从本地源码仓库重新编译安装（有远程时先 `git pull --ff-only`）

@@ -263,6 +263,7 @@ func createAgentByName(ctx context.Context, cfg *config.Config, name string) age
 			Cwd:          agCfg.Cwd,
 			Env:          agCfg.Env,
 			Model:        agCfg.Model,
+			Mode:         agCfg.Mode,
 			SystemPrompt: agCfg.SystemPrompt,
 		})
 		if err := ag.Start(ctx); err != nil {

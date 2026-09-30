@@ -14,8 +14,8 @@ fork 自 fastclaw-ai/weclaw v0.7.1，**不再跟随上游**，不要加回 upstr
 
 - 本机以 launchd 服务运行：`com.weclaw.bridge`，plist 由 `weclaw service install` 生成，不要手改。
 - 服务模式下只用 `weclaw start/stop/restart`（它们会走 launchctl），不要直接 `kill` 或另起 `weclaw start -f`，单实例锁会拒绝第二个实例。
-- 配置 `~/.weclaw/config.json`；Claude 走 ACP（`claude-agent-acp`，npm `@agentclientprotocol/claude-agent-acp`），模型由 `model` 字段决定，不要再用 `ANTHROPIC_MODEL` 环境变量。
-- ACP 模式自动放行所有工具权限（用户在电脑上也常开 bypass，这是预期行为）。
+- 配置 `~/.weclaw/config.json`；Claude 走 ACP（`claude-agent-acp`，npm `@agentclientprotocol/claude-agent-acp`）。`model`/`mode` 字段在新会话上通过 `session/set_config_option` 生效，不要用 `ANTHROPIC_MODEL` 环境变量代替；`env` 会传给 Agent 子进程（本机用它设 `TZ`，对齐用户终端 `cc` 别名：`TZ=Europe/Oslo` + bypass 权限）。
+- 本机 claude 配置了 `mode: bypassPermissions`；即使没设，ACP 模式也会自动放行权限请求（兜底）。
 
 ## 测试
 

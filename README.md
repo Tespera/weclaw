@@ -232,7 +232,25 @@ curl -X POST http://127.0.0.1:18011/api/send \
 
 通过 `cwd` 指定 Agent 的工作目录（workspace）。不设置则默认为 `~/.weclaw/workspace`。
 
-> **注意：** 这些参数会跳过安全检查，请了解风险后再启用。ACP 模式的 Agent 会自动处理权限，无需配置。
+> **注意：** 这些参数会跳过安全检查，请了解风险后再启用。
+
+### ACP 会话选项与环境变量
+
+ACP Agent 的 `model` 和 `mode` 会在每个新会话上通过 ACP 标准方法 `session/set_config_option` 设置；`env` 会传给 Agent 子进程。例如让微信里的 Claude 与终端里 `TZ=Europe/Oslo claude --dangerously-skip-permissions` 行为一致：
+
+```json
+{
+  "claude": {
+    "type": "acp",
+    "command": "/opt/homebrew/bin/claude-agent-acp",
+    "model": "opus",
+    "mode": "bypassPermissions",
+    "env": { "TZ": "Europe/Oslo" }
+  }
+}
+```
+
+`mode` 可选值由 Agent 决定（claude-agent-acp：`default`、`acceptEdits`、`plan`、`bypassPermissions` 等）。未设置 `mode` 时，ACP 模式仍会自动批准所有权限请求。修改配置后执行 `weclaw restart`。
 
 ## 运行与服务
 

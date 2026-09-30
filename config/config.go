@@ -25,6 +25,7 @@ type AgentConfig struct {
 	Cwd          string            `json:"cwd,omitempty"`           // working directory (workspace)
 	Env          map[string]string `json:"env,omitempty"`           // extra environment variables (cli/acp type)
 	Model        string            `json:"model,omitempty"`         // model name
+	Mode         string            `json:"mode,omitempty"`          // session mode (acp type), e.g. "bypassPermissions"
 	SystemPrompt string            `json:"system_prompt,omitempty"` // system prompt
 	Endpoint     string            `json:"endpoint,omitempty"`      // API endpoint (http type)
 	APIKey       string            `json:"api_key,omitempty"`       // API key (http type)
