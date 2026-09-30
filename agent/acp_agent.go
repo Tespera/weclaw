@@ -25,6 +25,7 @@ type ACPAgent struct {
 	mode               string
 	permissionRequests atomic.Int64 // permission prompts received; 0 under bypassPermissions
 	systemPrompt       string
+	sessionContext     func(conversationID string) string
 	cwd                string
 	env                map[string]string
 	protocol           string // "legacy_acp" or "codex_app_server"
@@ -60,8 +61,11 @@ type ACPAgentConfig struct {
 	Model        string
 	Mode         string // session mode applied to new sessions, e.g. "bypassPermissions"
 	SystemPrompt string
-	Cwd          string            // working directory
-	Env          map[string]string // extra environment variables
+	// SessionContext, if set, returns extra system-prompt text for the session
+	// created for conversationID (e.g. who the chat user is and how to reach them).
+	SessionContext func(conversationID string) string
+	Cwd            string            // working directory
+	Env            map[string]string // extra environment variables
 }
 
 // --- JSON-RPC types ---
@@ -104,8 +108,9 @@ type fsCapabilities struct {
 }
 
 type newSessionParams struct {
-	Cwd        string        `json:"cwd"`
-	McpServers []interface{} `json:"mcpServers"`
+	Cwd        string                 `json:"cwd"`
+	McpServers []interface{}          `json:"mcpServers"`
+	Meta       map[string]interface{} `json:"_meta,omitempty"`
 }
 
 type newSessionResult struct {
@@ -216,19 +221,20 @@ func NewACPAgent(cfg ACPAgentConfig) *ACPAgent {
 	}
 	protocol := detectACPProtocol(cfg.Command, cfg.Args)
 	return &ACPAgent{
-		command:      cfg.Command,
-		args:         cfg.Args,
-		model:        cfg.Model,
-		mode:         cfg.Mode,
-		systemPrompt: cfg.SystemPrompt,
-		cwd:          cfg.Cwd,
-		env:          cfg.Env,
-		protocol:     protocol,
-		sessions:     make(map[string]string),
-		threads:      make(map[string]string),
-		pending:      make(map[int64]chan *rpcResponse),
-		notifyCh:     make(map[string]chan *sessionUpdate),
-		turnCh:       make(map[string]chan *codexTurnEvent),
+		command:        cfg.Command,
+		args:           cfg.Args,
+		model:          cfg.Model,
+		mode:           cfg.Mode,
+		systemPrompt:   cfg.SystemPrompt,
+		sessionContext: cfg.SessionContext,
+		cwd:            cfg.Cwd,
+		env:            cfg.Env,
+		protocol:       protocol,
+		sessions:       make(map[string]string),
+		threads:        make(map[string]string),
+		pending:        make(map[int64]chan *rpcResponse),
+		notifyCh:       make(map[string]chan *sessionUpdate),
+		turnCh:         make(map[string]chan *codexTurnEvent),
 	}
 }
 
@@ -606,6 +612,7 @@ func (a *ACPAgent) getOrCreateSession(ctx context.Context, conversationID string
 	result, err := a.rpc(ctx, "session/new", newSessionParams{
 		Cwd:        a.cwd,
 		McpServers: []interface{}{},
+		Meta:       a.sessionMeta(conversationID),
 	})
 	if err != nil {
 		return "", false, err
@@ -623,6 +630,28 @@ func (a *ACPAgent) getOrCreateSession(ctx context.Context, conversationID string
 	a.mu.Unlock()
 
 	return sessionResult.SessionID, true, nil
+}
+
+// sessionMeta builds the session/new _meta. The system prompt is appended to
+// the agent's preset (claude-agent-acp keeps its claude_code preset for an
+// object with "append"; a bare string would replace it). Agents that do not
+// understand _meta ignore it.
+func (a *ACPAgent) sessionMeta(conversationID string) map[string]interface{} {
+	var parts []string
+	if p := strings.TrimSpace(a.systemPrompt); p != "" {
+		parts = append(parts, p)
+	}
+	if a.sessionContext != nil {
+		if p := strings.TrimSpace(a.sessionContext(conversationID)); p != "" {
+			parts = append(parts, p)
+		}
+	}
+	if len(parts) == 0 {
+		return nil
+	}
+	return map[string]interface{}{
+		"systemPrompt": map[string]interface{}{"append": strings.Join(parts, "\n\n")},
+	}
 }
 
 // configOptionID returns the id of the session config option for category

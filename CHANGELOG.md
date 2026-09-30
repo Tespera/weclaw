@@ -2,6 +2,14 @@
 
 本仓库自 v0.9.0 起独立维护，不再跟随 [fastclaw-ai/weclaw](https://github.com/fastclaw-ai/weclaw)。更早的版本见上游。
 
+## v0.9.4 — 2026-09-30
+
+### 修复
+- ACP Agent 的 `system_prompt` 配置此前被读取但从未使用，现在追加到会话系统提示
+
+### 新增
+- 每个 ACP 会话自动附带微信会话说明（用户微信 ID、用 `weclaw send --media` 发本地文件），Agent 不再临时起 HTTP 服务来发文件
+
 ## v0.9.3 — 2026-09-30
 
 ### 新增

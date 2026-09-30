@@ -260,13 +260,14 @@ func createAgentByName(ctx context.Context, cfg *config.Config, name string) age
 	switch agCfg.Type {
 	case "acp":
 		ag := agent.NewACPAgent(agent.ACPAgentConfig{
-			Command:      agCfg.Command,
-			Args:         agCfg.Args,
-			Cwd:          agCfg.Cwd,
-			Env:          agCfg.Env,
-			Model:        agCfg.Model,
-			Mode:         agCfg.Mode,
-			SystemPrompt: agCfg.SystemPrompt,
+			Command:        agCfg.Command,
+			Args:           agCfg.Args,
+			Cwd:            agCfg.Cwd,
+			Env:            agCfg.Env,
+			Model:          agCfg.Model,
+			Mode:           agCfg.Mode,
+			SystemPrompt:   agCfg.SystemPrompt,
+			SessionContext: wechatSessionContext,
 		})
 		if err := ag.Start(ctx); err != nil {
 			log.Printf("[agent] failed to start ACP agent %q: %v", name, err)
@@ -462,4 +463,21 @@ func stopAllWeclaw() {
 	// Use pkill to kill all processes matching the executable path
 	_ = exec.Command("pkill", "-f", exe+" start").Run()
 	time.Sleep(500 * time.Millisecond)
+}
+
+// wechatSessionContext tells the agent it is talking over WeChat and how to send
+// local files back, so it does not improvise (e.g. serving files over HTTP).
+// conversationID is the WeChat user ID for direct chats.
+func wechatSessionContext(conversationID string) string {
+	exe := "weclaw"
+	if p, err := os.Executable(); err == nil {
+		if resolved, err := filepath.EvalSymlinks(p); err == nil {
+			exe = resolved
+		}
+	}
+	return fmt.Sprintf(`你正在通过微信（weclaw 桥接）与用户对话，用户在手机上阅读你的回复。
+当前微信用户 ID：%[1]s
+需要把本机文件（图片、文档、压缩包等任意类型）发给用户时，直接执行：
+  %[2]s send --to %[1]q --media <本地路径>
+--media 可重复以一次发送多个文件，也可加 --text 附一句说明。不要为了发送文件临时启动 HTTP 服务或上传到外部网站。`, conversationID, exe)
 }

@@ -50,8 +50,8 @@ func TestConfigOptionID(t *testing.T) {
 	}
 }
 
-// TestACPModelE2E drives a real claude-agent-acp and checks that model, mode
-// and env reach the session: the transcript model is haiku, a Bash call runs
+// TestACPModelE2E drives a real claude-agent-acp and checks that model, mode,
+// env and the appended session context reach the session: the transcript model is haiku, a Bash call runs
 // without any permission prompt (bypassPermissions), and TZ is honored.
 // Opt-in: WECLAW_ACP_E2E=1 go test ./agent -run TestACPModelE2E -v
 func TestACPModelE2E(t *testing.T) {
@@ -65,6 +65,9 @@ func TestACPModelE2E(t *testing.T) {
 		Mode:    "bypassPermissions",
 		Env:     map[string]string{"TZ": "Europe/Oslo"},
 		Cwd:     cwd,
+		SessionContext: func(id string) string {
+			return "The chat user's WeChat ID is " + id + "."
+		},
 	})
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
@@ -73,7 +76,7 @@ func TestACPModelE2E(t *testing.T) {
 	}
 	defer a.Stop()
 
-	reply, err := a.Chat(ctx, "e2e", "Use the Bash tool to run exactly: date +%Z. Then reply with only its output.")
+	reply, err := a.Chat(ctx, "wx-e2e-42@im.wechat", "Use the Bash tool to run exactly: date +%Z. Then reply with only its output.")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -85,8 +88,16 @@ func TestACPModelE2E(t *testing.T) {
 		t.Errorf("got %d permission requests, want 0 under bypassPermissions", n)
 	}
 
+	idReply, err := a.Chat(ctx, "wx-e2e-42@im.wechat", "What is the chat user's WeChat ID given in your instructions? Reply with the ID only.")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(idReply, "wx-e2e-42@im.wechat") {
+		t.Errorf("id reply %q: session context not in system prompt", idReply)
+	}
+
 	a.mu.Lock()
-	sid := a.sessions["e2e"]
+	sid := a.sessions["wx-e2e-42@im.wechat"]
 	a.mu.Unlock()
 	home, _ := os.UserHomeDir()
 	matches, _ := filepath.Glob(filepath.Join(home, ".claude", "projects", "*", sid+".jsonl"))

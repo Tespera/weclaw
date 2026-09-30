@@ -265,6 +265,8 @@ ACP Agent 的 `model` 和 `mode` 会在每个新会话上通过 ACP 标准方法
 
 会话的工作区决定加载哪些项目上下文：项目 CLAUDE.md、`.mcp.json`、项目级 skills，以及按目录区分的 Claude 自动记忆。想和终端里从某目录启动的 Claude 一致，就把 `cwd` 设成那个目录。claude.ai 账号里的连接器（MCP）在 SDK 模式下默认关闭，需要时在 `env` 里加 `"ENABLE_CLAUDEAI_MCP_SERVERS": "true"`。
 
+每个新会话还会自动追加一段微信会话说明（当前用户的微信 ID、如何用 `weclaw send --media <本地路径>` 发文件），再加上配置里的 `system_prompt`。二者通过 `session/new` 的 `_meta.systemPrompt.append` 追加到 Agent 自带的系统提示之后，不会替换它。
+
 `mode` 可选值由 Agent 决定（claude-agent-acp：`default`、`acceptEdits`、`plan`、`bypassPermissions` 等）。未设置 `mode` 时，ACP 模式仍会自动批准所有权限请求。修改配置后执行 `weclaw restart`。
 
 ## 运行与服务
