@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // fakeLaunchctl records launchctl invocations; print succeeds only when loaded.
@@ -16,12 +17,20 @@ type fakeLaunchctl struct {
 	loaded bool
 	pid    string
 	calls  []string
+	// lingering makes "print" keep finding the job for this many probes after
+	// bootout, like launchd while a job is still being torn down.
+	lingering int
+	dying     int
 }
 
 func (f *fakeLaunchctl) run(args ...string) ([]byte, error) {
 	f.calls = append(f.calls, strings.Join(args, " "))
 	switch args[0] {
 	case "print":
+		if f.dying > 0 {
+			f.dying--
+			return []byte("com.weclaw.bridge = {\n\tstate = SIGTERMed\n}"), nil
+		}
 		if !f.loaded {
 			return []byte("Could not find service"), errors.New("exit status 113")
 		}
@@ -30,6 +39,7 @@ func (f *fakeLaunchctl) run(args ...string) ([]byte, error) {
 		f.loaded = true
 	case "bootout":
 		f.loaded = false
+		f.dying = f.lingering
 	}
 	return nil, nil
 }
@@ -38,9 +48,10 @@ func withFakeLaunchctl(t *testing.T, loaded bool) *fakeLaunchctl {
 	t.Helper()
 	t.Setenv("HOME", t.TempDir())
 	f := &fakeLaunchctl{loaded: loaded, pid: "4242"}
-	orig := launchctl
+	orig, origTimeout, origPoll := launchctl, serviceStopTimeout, servicePollInterval
 	launchctl = f.run
-	t.Cleanup(func() { launchctl = orig })
+	serviceStopTimeout, servicePollInterval = 200*time.Millisecond, time.Millisecond
+	t.Cleanup(func() { launchctl, serviceStopTimeout, servicePollInterval = orig, origTimeout, origPoll })
 	return f
 }
 
@@ -203,5 +214,29 @@ func TestServicePath(t *testing.T) {
 	}
 	if _, err := os.Stat("/opt/homebrew/bin"); err == nil && got[0] != "/opt/homebrew/bin" {
 		t.Errorf("order not preserved, got %v", got)
+	}
+}
+
+// Reinstalling a running service must end with it loaded again, even though
+// launchd keeps reporting the old job for a while after bootout.
+func TestServiceInstallWhileRunningWaitsForBootout(t *testing.T) {
+	f := withFakeLaunchctl(t, true)
+	f.lingering = 3
+	if err := serviceInstall(); err != nil {
+		t.Fatal(err)
+	}
+	if !f.loaded {
+		t.Fatalf("service not loaded after reinstall; calls = %q", f.calls)
+	}
+	if m := f.mutations(); len(m) != 2 || m[0] != "bootout" || m[1] != "bootstrap" {
+		t.Fatalf("launchctl mutations = %q, want [bootout bootstrap]", m)
+	}
+}
+
+func TestServiceStopTimesOut(t *testing.T) {
+	f := withFakeLaunchctl(t, true)
+	f.lingering = 1 << 30
+	if err := serviceStop(); err == nil || !strings.Contains(err.Error(), "did not unload") {
+		t.Fatalf("serviceStop error = %v, want unload timeout", err)
 	}
 }

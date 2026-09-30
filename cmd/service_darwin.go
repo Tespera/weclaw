@@ -19,6 +19,12 @@ import (
 // launchdLabel identifies the weclaw LaunchAgent.
 const launchdLabel = "com.weclaw.bridge"
 
+// Polling bounds for launchd state changes. Shortened in tests.
+var (
+	serviceStopTimeout  = 10 * time.Second
+	servicePollInterval = 200 * time.Millisecond
+)
+
 // launchctl runs launchctl with args. Replaced in tests.
 var launchctl = func(args ...string) ([]byte, error) {
 	return exec.Command("launchctl", args...).CombinedOutput()
@@ -67,6 +73,16 @@ func serviceStop() error {
 	}
 	if out, err := launchctl("bootout", launchdTarget()); err != nil {
 		return fmt.Errorf("launchctl bootout: %v: %s", err, bytes.TrimSpace(out))
+	}
+	// bootout returns while the job is still tearing down (state = SIGTERMed).
+	// Until it is gone, "print" still finds it, and a following start would
+	// kickstart the dying job instead of bootstrapping a new one.
+	deadline := time.Now().Add(serviceStopTimeout)
+	for serviceLoaded() {
+		if time.Now().After(deadline) {
+			return fmt.Errorf("launchd did not unload %s within %s", launchdLabel, serviceStopTimeout)
+		}
+		time.Sleep(servicePollInterval)
 	}
 	return nil
 }
