@@ -60,9 +60,10 @@ weclaw service install
 | `/codex 写一个排序函数` | 发送给指定 Agent         |
 | `/cc 解释一下这段代码`  | 通过别名发送             |
 | `/claude`               | 切换默认 Agent 为 Claude |
-| `/cwd /path/to/project` | 切换工作目录             |
+| `/cwd /path/to/project` | 切换工作区：所有 Agent 生效、写回配置，并立即新建会话 |
+| `/cwd`                  | 查看当前工作区 |
 | `/new`                  | 开始新对话（清除会话）   |
-| `/info`                 | 查看当前 Agent 信息      |
+| `/info`                 | 查看当前 Agent 信息（含工作区） |
 | `/help`                 | 查看帮助信息             |
 
 ### 快捷别名
@@ -249,6 +250,8 @@ ACP Agent 的 `model` 和 `mode` 会在每个新会话上通过 ACP 标准方法
   }
 }
 ```
+
+会话的工作区决定加载哪些项目上下文：项目 CLAUDE.md、`.mcp.json`、项目级 skills，以及按目录区分的 Claude 自动记忆。想和终端里从某目录启动的 Claude 一致，就把 `cwd` 设成那个目录。claude.ai 账号里的连接器（MCP）在 SDK 模式下默认关闭，需要时在 `env` 里加 `"ENABLE_CLAUDEAI_MCP_SERVERS": "true"`。
 
 `mode` 可选值由 Agent 决定（claude-agent-acp：`default`、`acceptEdits`、`plan`、`bypassPermissions` 等）。未设置 `mode` 时，ACP 模式仍会自动批准所有权限请求。修改配置后执行 `weclaw restart`。
 

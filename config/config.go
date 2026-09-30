@@ -173,3 +173,46 @@ func SaveDefaultAgent(name string) error {
 
 	return os.WriteFile(path, data, 0o600)
 }
+
+// SaveAgentCwd reads the config from disk, sets "cwd" on the named agents only,
+// and writes it back, leaving every other field as found on disk (same approach
+// as SaveDefaultAgent). Names not present in the config are ignored.
+func SaveAgentCwd(names []string, cwd string) error {
+	path, err := ConfigPath()
+	if err != nil {
+		return err
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("read config: %w", err)
+	}
+
+	var doc map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		return fmt.Errorf("parse config: %w", err)
+	}
+	var agents map[string]map[string]json.RawMessage
+	if len(doc["agents"]) > 0 {
+		if err := json.Unmarshal(doc["agents"], &agents); err != nil {
+			return fmt.Errorf("parse agents: %w", err)
+		}
+	}
+	cwdJSON, err := json.Marshal(cwd)
+	if err != nil {
+		return fmt.Errorf("marshal cwd: %w", err)
+	}
+	for _, name := range names {
+		if ag, ok := agents[name]; ok {
+			ag["cwd"] = cwdJSON
+		}
+	}
+	if doc["agents"], err = json.Marshal(agents); err != nil {
+		return fmt.Errorf("marshal agents: %w", err)
+	}
+
+	data, err := json.MarshalIndent(doc, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal config: %w", err)
+	}
+	return os.WriteFile(path, data, 0o600)
+}

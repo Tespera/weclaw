@@ -21,6 +21,9 @@ type AgentFactory func(ctx context.Context, name string) agent.Agent
 // SaveDefaultFunc persists the default agent name to config file.
 type SaveDefaultFunc func(name string) error
 
+// SaveCwdFunc persists an agent working directory to the config file.
+type SaveCwdFunc func(agentNames []string, cwd string) error
+
 // AgentMeta holds static config info about an agent (for /status display).
 type AgentMeta struct {
 	Name    string
@@ -39,6 +42,7 @@ type Handler struct {
 	customAliases map[string]string      // custom alias -> agent name (from config)
 	factory       AgentFactory
 	saveDefault   SaveDefaultFunc
+	saveCwd       SaveCwdFunc
 	contextTokens sync.Map // map[userID]contextToken
 	saveDir       string   // directory to save images/files to
 	seenMsgs      sync.Map // map[int64]time.Time — dedup by message_id
@@ -95,6 +99,14 @@ func (h *Handler) SetAgentWorkDirs(workDirs map[string]string) {
 	}
 }
 
+// SetSaveCwd sets how /cwd persists the working directory. Without it, /cwd
+// only lasts until restart.
+func (h *Handler) SetSaveCwd(f SaveCwdFunc) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.saveCwd = f
+}
+
 // SetDefaultAgent sets the default agent (already started).
 func (h *Handler) SetDefaultAgent(name string, ag agent.Agent) {
 	h.mu.Lock()
@@ -133,12 +145,15 @@ func (h *Handler) getAgent(ctx context.Context, name string) (agent.Agent, error
 		return nil, fmt.Errorf("agent %q not available", name)
 	}
 
+	// Apply a runtime /cwd (or the configured cwd) to agents started later.
+	if dir := h.agentWorkDirs[name]; dir != "" {
+		ag.SetCwd(dir)
+	}
 	h.agents[name] = ag
 	log.Printf("[handler] agent started on demand: %s (%s)", name, ag.Info())
 	return ag, nil
 }
 
-// getDefaultAgent returns the default agent (may be nil if not ready yet).
 // stopper is implemented by agents that own a long-running subprocess.
 type stopper interface{ Stop() }
 
@@ -159,6 +174,7 @@ func (h *Handler) StopAgents() {
 	}
 }
 
+// getDefaultAgent returns the default agent (may be nil if not ready yet).
 func (h *Handler) getDefaultAgent() agent.Agent {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
@@ -364,7 +380,7 @@ func (h *Handler) HandleMessage(ctx context.Context, client *ilink.Client, msg i
 		}
 		return
 	} else if strings.HasPrefix(trimmed, "/cwd") {
-		reply := h.handleCwd(trimmed)
+		reply := h.handleCwd(ctx, msg.FromUserID, trimmed)
 		if err := SendTextReply(ctx, client, msg.FromUserID, reply, msg.ContextToken, clientID); err != nil {
 			log.Printf("[handler] failed to send reply to %s: %v", msg.FromUserID, err)
 		}
@@ -644,16 +660,18 @@ func displayPath(p string) string {
 }
 
 // handleCwd handles the /cwd command. It updates the working directory for all running agents.
-func (h *Handler) handleCwd(trimmed string) string {
+func (h *Handler) handleCwd(ctx context.Context, userID, trimmed string) string {
 	arg := strings.TrimSpace(strings.TrimPrefix(trimmed, "/cwd"))
 	if arg == "" {
 		// No path provided — show current cwd of default agent
+		h.mu.RLock()
+		name := h.defaultName
+		h.mu.RUnlock()
 		ag := h.getDefaultAgent()
 		if ag == nil {
 			return "No agent running."
 		}
-		info := ag.Info()
-		return fmt.Sprintf("cwd: (check agent config)\nagent: %s", info.Name)
+		return fmt.Sprintf("工作区: %s\nagent: %s", displayPath(ag.Info().Cwd), name)
 	}
 
 	// Expand ~ to home directory
@@ -697,13 +715,50 @@ func (h *Handler) handleCwd(trimmed string) string {
 		log.Printf("[handler] updated cwd for agent %s: %s", name, absPath)
 	}
 
+	// Record and persist for every configured agent, not only running ones,
+	// so agents started later use the same workspace.
 	h.mu.Lock()
+	seen := make(map[string]bool)
+	var names []string
 	for name := range agents {
+		seen[name] = true
+		names = append(names, name)
+	}
+	for _, meta := range h.agentMetas {
+		if !seen[meta.Name] {
+			seen[meta.Name] = true
+			names = append(names, meta.Name)
+		}
+	}
+	for _, name := range names {
 		h.agentWorkDirs[name] = absPath
 	}
+	saveCwd := h.saveCwd
+	defaultName := h.defaultName
 	h.mu.Unlock()
 
-	return fmt.Sprintf("cwd: %s", absPath)
+	reply := "已切换工作区: " + displayPath(absPath)
+	if saveCwd != nil {
+		if err := saveCwd(names, absPath); err != nil {
+			log.Printf("[handler] failed to persist cwd: %v", err)
+			reply += "\n（未能写入配置，重启后会恢复原工作区）"
+		}
+	}
+
+	// A session's working directory is fixed when it is created, so the new
+	// cwd only takes effect in a new session. Start one now for this user.
+	if ag := agents[defaultName]; ag != nil {
+		sessionID, err := ag.ResetSession(ctx, userID)
+		if err != nil {
+			log.Printf("[handler] reset session after cwd change failed for %s: %v", userID, err)
+			return reply + "\n新建会话失败，请发送 /new 重试"
+		}
+		reply += fmt.Sprintf("\n已新建 %s 会话", defaultName)
+		if sessionID != "" {
+			reply += "\n会话: " + sessionID
+		}
+	}
+	return reply
 }
 
 // buildStatus returns a short status string showing the current default agent.

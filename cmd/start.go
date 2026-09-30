@@ -129,6 +129,8 @@ func runStart(cmd *cobra.Command, args []string) error {
 		},
 	)
 
+	handler.SetSaveCwd(config.SaveAgentCwd)
+
 	// Populate agent metas for /status
 	var metas []messaging.AgentMeta
 	workDirs := make(map[string]string, len(cfg.Agents))
