@@ -63,6 +63,7 @@ weclaw service install
 | `/cwd /path/to/project` | 切换工作区：所有 Agent 生效、写回配置，并立即新建会话 |
 | `/cwd`                  | 查看当前工作区 |
 | `/new`                  | 开始新对话（清除会话）   |
+| `/new 帮我看下这个报错` | 开始新对话并直接发送这条消息 |
 | `/info`                 | 查看当前 Agent 信息（含工作区） |
 | `/help`                 | 查看帮助信息             |
 

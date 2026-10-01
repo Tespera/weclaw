@@ -373,11 +373,22 @@ func (h *Handler) HandleMessage(ctx context.Context, client *ilink.Client, msg i
 			log.Printf("[handler] failed to send reply to %s: %v", msg.FromUserID, err)
 		}
 		return
-	} else if trimmed == "/new" || trimmed == "/clear" {
-		reply := h.resetDefaultSession(ctx, msg.FromUserID)
-		if err := SendTextReply(ctx, client, msg.FromUserID, reply, msg.ContextToken, clientID); err != nil {
-			log.Printf("[handler] failed to send reply to %s: %v", msg.FromUserID, err)
+	} else if message, ok := parseNewCommand(trimmed); ok {
+		if message == "" {
+			reply := h.resetDefaultSession(ctx, msg.FromUserID)
+			if err := SendTextReply(ctx, client, msg.FromUserID, reply, msg.ContextToken, clientID); err != nil {
+				log.Printf("[handler] failed to send reply to %s: %v", msg.FromUserID, err)
+			}
+			return
 		}
+		// "/new <message>": start a new session, then ask it the message.
+		go func() {
+			if typingErr := SendTypingState(ctx, client, msg.FromUserID, msg.ContextToken); typingErr != nil {
+				log.Printf("[handler] failed to send typing state: %v", typingErr)
+			}
+		}()
+		name, reply := h.chatInNewSession(ctx, msg.FromUserID, message)
+		h.sendReplyWithMedia(ctx, client, msg, name, reply, clientID)
 		return
 	} else if strings.HasPrefix(trimmed, "/cwd") {
 		reply := h.handleCwd(ctx, msg.FromUserID, trimmed)
@@ -644,6 +655,46 @@ func (h *Handler) resetDefaultSession(ctx context.Context, userID string) string
 	return reply
 }
 
+// parseNewCommand recognizes "/new" and "/clear", optionally followed by a
+// message for the new session. ok is false for anything else (e.g. "/newer").
+func parseNewCommand(text string) (message string, ok bool) {
+	for _, cmd := range []string{"/new", "/clear"} {
+		rest, found := strings.CutPrefix(text, cmd)
+		if !found {
+			continue
+		}
+		if rest == "" {
+			return "", true
+		}
+		if r := rest[0]; r == ' ' || r == '\t' || r == '\n' || r == '\r' {
+			return strings.TrimSpace(rest), true
+		}
+	}
+	return "", false
+}
+
+// chatInNewSession resets the default agent's session for userID and sends
+// message to the fresh session. It returns the agent name and the reply text
+// (an error message if either step fails).
+func (h *Handler) chatInNewSession(ctx context.Context, userID, message string) (string, string) {
+	h.mu.RLock()
+	name := h.defaultName
+	h.mu.RUnlock()
+	ag := h.getDefaultAgent()
+	if ag == nil {
+		return name, "No agent running."
+	}
+	if _, err := ag.ResetSession(ctx, userID); err != nil {
+		log.Printf("[handler] reset session failed for %s: %v", userID, err)
+		return name, fmt.Sprintf("Failed to reset session: %v", err)
+	}
+	reply, err := h.chatWithAgent(ctx, ag, userID, message)
+	if err != nil {
+		return name, fmt.Sprintf("Error: %v", err)
+	}
+	return name, reply
+}
+
 // displayPath shortens a path under the home directory to ~/... for chat replies.
 func displayPath(p string) string {
 	home, err := os.UserHomeDir()
@@ -789,6 +840,7 @@ func buildHelpText() string {
 @agent msg or /agent msg - Send to a specific agent
 @a @b msg - Broadcast to multiple agents
 /new or /clear - Start a new session
+/new msg - Start a new session and send msg to it
 /cwd /path - Switch workspace directory
 /info - Show current agent info
 /help - Show this help message
