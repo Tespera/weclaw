@@ -39,6 +39,15 @@ type ACPAgent struct {
 	sessions map[string]string // conversationID -> sessionID (legacy ACP)
 	threads  map[string]string // conversationID -> threadID (codex app-server)
 
+	// convLock serializes session/thread lookup, creation and reset per
+	// conversation, so concurrent messages share one session and a /new is not
+	// overwritten by a creation that was already in flight.
+	convLock keyedLock
+	// turnLock allows one prompt in flight per session/thread. Session updates
+	// carry no prompt id, so overlapping prompts on one session cannot be told
+	// apart: one would steal or drop the other's reply.
+	turnLock keyedLock
+
 	// pending tracks in-flight JSON-RPC requests
 	pendingMu sync.Mutex
 	pending   map[int64]chan *rpcResponse
@@ -360,13 +369,19 @@ func (a *ACPAgent) SetCwd(cwd string) {
 // ResetSession clears the existing session for the given conversationID and
 // immediately creates a new one, returning the new session ID.
 func (a *ACPAgent) ResetSession(ctx context.Context, conversationID string) (string, error) {
+	unlock, _, err := a.convLock.lock(ctx, conversationID)
+	if err != nil {
+		return "", err
+	}
+	defer unlock()
+
 	if a.protocol == protocolCodexAppServer {
 		a.mu.Lock()
 		delete(a.threads, conversationID)
 		a.mu.Unlock()
 		log.Printf("[acp] thread reset (conversation=%s), creating new thread", conversationID)
 
-		threadID, _, err := a.getOrCreateThread(ctx, conversationID)
+		threadID, _, err := a.getOrCreateThreadLocked(ctx, conversationID)
 		if err != nil {
 			return "", fmt.Errorf("create new thread: %w", err)
 		}
@@ -378,7 +393,7 @@ func (a *ACPAgent) ResetSession(ctx context.Context, conversationID string) (str
 	a.mu.Unlock()
 	log.Printf("[acp] session reset (conversation=%s), creating new session", conversationID)
 
-	sessionID, _, err := a.getOrCreateSession(ctx, conversationID)
+	sessionID, _, err := a.getOrCreateSessionLocked(ctx, conversationID)
 	if err != nil {
 		return "", fmt.Errorf("create new session: %w", err)
 	}
@@ -387,28 +402,45 @@ func (a *ACPAgent) ResetSession(ctx context.Context, conversationID string) (str
 
 // Chat sends a message and returns the full response.
 func (a *ACPAgent) Chat(ctx context.Context, conversationID string, message string) (string, error) {
+	return a.chat(ctx, conversationID, message, nil)
+}
+
+// ChatWithImage sends a message with an image to the agent.
+func (a *ACPAgent) ChatWithImage(ctx context.Context, conversationID string, message string, image *ImageInput) (string, error) {
+	return a.chat(ctx, conversationID, message, image)
+}
+
+func (a *ACPAgent) chat(ctx context.Context, conversationID string, message string, image *ImageInput) (string, error) {
 	if !a.started {
 		if err := a.Start(ctx); err != nil {
 			return "", err
 		}
 	}
 
-	// Route to codex app-server protocol if applicable
+	// Route to codex app-server protocol if applicable (no image input there)
 	if a.protocol == protocolCodexAppServer {
 		return a.chatCodexAppServer(ctx, conversationID, message)
 	}
 
-	// Get or create session
 	sessionID, isNew, err := a.getOrCreateSession(ctx, conversationID)
 	if err != nil {
 		return "", fmt.Errorf("session error: %w", err)
 	}
 
-	pid := a.cmd.Process.Pid
+	pid := a.pid()
 	if isNew {
 		log.Printf("[acp] new session created (pid=%d, session=%s, conversation=%s)", pid, sessionID, conversationID)
 	} else {
 		log.Printf("[acp] reusing session (pid=%d, session=%s, conversation=%s)", pid, sessionID, conversationID)
+	}
+
+	unlock, waited, err := a.turnLock.lock(ctx, sessionID)
+	if err != nil {
+		return "", err
+	}
+	defer unlock()
+	if waited {
+		log.Printf("[acp] previous prompt finished, sending queued prompt (session=%s)", sessionID)
 	}
 
 	// Register notification channel for this session
@@ -419,12 +451,13 @@ func (a *ACPAgent) Chat(ctx context.Context, conversationID string, message stri
 
 	defer func() {
 		a.notifyMu.Lock()
-		delete(a.notifyCh, sessionID)
+		if a.notifyCh[sessionID] == notifyCh {
+			delete(a.notifyCh, sessionID)
+		}
 		a.notifyMu.Unlock()
 	}()
 
-	// Build prompt entries
-	prompt := a.buildPrompt(message, nil)
+	prompt := a.buildPrompt(message, image)
 
 	// Send prompt (this blocks until the prompt completes)
 	type promptDoneMsg struct {
@@ -445,34 +478,30 @@ func (a *ACPAgent) Chat(ctx context.Context, conversationID string, message stri
 
 	// Collect text chunks from notifications
 	var textParts []string
+	collect := func(update *sessionUpdate) {
+		if update.SessionUpdate == "agent_message_chunk" {
+			if text := extractChunkText(update); text != "" {
+				textParts = append(textParts, text)
+			}
+		}
+	}
 
 	for {
 		select {
 		case <-ctx.Done():
 			return "", ctx.Err()
 		case update := <-notifyCh:
-			if update.SessionUpdate == "agent_message_chunk" {
-				text := extractChunkText(update)
-				if text != "" {
-					textParts = append(textParts, text)
-				}
-			}
+			collect(update)
 		case done := <-promptDone:
 			// Drain remaining notifications
-			for {
+			for drained := false; !drained; {
 				select {
 				case update := <-notifyCh:
-					if update.SessionUpdate == "agent_message_chunk" {
-						text := extractChunkText(update)
-						if text != "" {
-							textParts = append(textParts, text)
-						}
-					}
+					collect(update)
 				default:
-					goto drained
+					drained = true
 				}
 			}
-		drained:
 			if done.err != nil {
 				return "", fmt.Errorf("prompt error: %w", done.err)
 			}
@@ -482,7 +511,9 @@ func (a *ACPAgent) Chat(ctx context.Context, conversationID string, message stri
 				result = extractPromptResultText(done.result)
 			}
 			if result == "" {
-				return "", fmt.Errorf("agent returned empty response")
+				var pr promptResult
+				_ = json.Unmarshal(done.result, &pr)
+				return "", fmt.Errorf("agent returned empty response (stopReason=%s)", pr.StopReason)
 			}
 			return result, nil
 		}
@@ -505,102 +536,27 @@ func (a *ACPAgent) buildPrompt(message string, image *ImageInput) []promptEntry 
 	return entries
 }
 
-// ChatWithImage sends a message with an image to the agent.
-func (a *ACPAgent) ChatWithImage(ctx context.Context, conversationID string, message string, image *ImageInput) (string, error) {
-	if !a.started {
-		if err := a.Start(ctx); err != nil {
-			return "", err
-		}
+// pid returns the agent subprocess pid, or 0 when not running.
+func (a *ACPAgent) pid() int {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.cmd != nil && a.cmd.Process != nil {
+		return a.cmd.Process.Pid
 	}
-
-	if a.protocol == protocolCodexAppServer {
-		// Codex doesn't support image input, fall back to text only
-		return a.chatCodexAppServer(ctx, conversationID, message)
-	}
-
-	sessionID, isNew, err := a.getOrCreateSession(ctx, conversationID)
-	if err != nil {
-		return "", fmt.Errorf("session error: %w", err)
-	}
-
-	pid := a.cmd.Process.Pid
-	if isNew {
-		log.Printf("[acp] new session created (pid=%d, session=%s, conversation=%s)", pid, sessionID, conversationID)
-	} else {
-		log.Printf("[acp] reusing session (pid=%d, session=%s, conversation=%s)", pid, sessionID, conversationID)
-	}
-
-	notifyCh := make(chan *sessionUpdate, 256)
-	a.notifyMu.Lock()
-	a.notifyCh[sessionID] = notifyCh
-	a.notifyMu.Unlock()
-	defer func() {
-		a.notifyMu.Lock()
-		delete(a.notifyCh, sessionID)
-		a.notifyMu.Unlock()
-	}()
-
-	prompt := a.buildPrompt(message, image)
-
-	type promptDoneMsg struct {
-		result json.RawMessage
-		err    error
-	}
-	promptDone := make(chan promptDoneMsg, 1)
-	go func() {
-		result, err := a.call(ctx, "session/prompt", promptParams{
-			SessionID: sessionID,
-			Prompt:    prompt,
-		})
-		if result != nil {
-			log.Printf("[acp] prompt result (session=%s): %s", sessionID, string(result))
-		}
-		promptDone <- promptDoneMsg{result: result, err: err}
-	}()
-
-	var textParts []string
-	for {
-		select {
-		case <-ctx.Done():
-			return "", ctx.Err()
-		case update := <-notifyCh:
-			if update.SessionUpdate == "agent_message_chunk" {
-				text := extractChunkText(update)
-				if text != "" {
-					textParts = append(textParts, text)
-				}
-			}
-		case done := <-promptDone:
-			for {
-				select {
-				case update := <-notifyCh:
-					if update.SessionUpdate == "agent_message_chunk" {
-						text := extractChunkText(update)
-						if text != "" {
-							textParts = append(textParts, text)
-						}
-					}
-				default:
-					goto drained2
-				}
-			}
-		drained2:
-			if done.err != nil {
-				return "", fmt.Errorf("prompt error: %w", done.err)
-			}
-			result := strings.TrimSpace(strings.Join(textParts, ""))
-			if result == "" {
-				result = extractPromptResultText(done.result)
-			}
-			if result == "" {
-				return "", fmt.Errorf("agent returned empty response")
-			}
-			return result, nil
-		}
-	}
+	return 0
 }
 
 func (a *ACPAgent) getOrCreateSession(ctx context.Context, conversationID string) (string, bool, error) {
+	unlock, _, err := a.convLock.lock(ctx, conversationID)
+	if err != nil {
+		return "", false, err
+	}
+	defer unlock()
+	return a.getOrCreateSessionLocked(ctx, conversationID)
+}
+
+// getOrCreateSessionLocked requires convLock held for conversationID.
+func (a *ACPAgent) getOrCreateSessionLocked(ctx context.Context, conversationID string) (string, bool, error) {
 	a.mu.Lock()
 	sid, exists := a.sessions[conversationID]
 	a.mu.Unlock()
@@ -702,6 +658,16 @@ func (a *ACPAgent) applySessionConfig(ctx context.Context, session newSessionRes
 // --- Codex app-server protocol ---
 
 func (a *ACPAgent) getOrCreateThread(ctx context.Context, conversationID string) (string, bool, error) {
+	unlock, _, err := a.convLock.lock(ctx, conversationID)
+	if err != nil {
+		return "", false, err
+	}
+	defer unlock()
+	return a.getOrCreateThreadLocked(ctx, conversationID)
+}
+
+// getOrCreateThreadLocked requires convLock held for conversationID.
+func (a *ACPAgent) getOrCreateThreadLocked(ctx context.Context, conversationID string) (string, bool, error) {
 	a.mu.Lock()
 	tid, exists := a.threads[conversationID]
 	a.mu.Unlock()
@@ -748,17 +714,20 @@ func (a *ACPAgent) chatCodexAppServer(ctx context.Context, conversationID string
 		return "", fmt.Errorf("thread error: %w", err)
 	}
 
-	pid := 0
-	a.mu.Lock()
-	if a.cmd != nil && a.cmd.Process != nil {
-		pid = a.cmd.Process.Pid
-	}
-	a.mu.Unlock()
-
+	pid := a.pid()
 	if isNew {
 		log.Printf("[acp] new thread created (pid=%d, thread=%s, conversation=%s)", pid, threadID, conversationID)
 	} else {
 		log.Printf("[acp] reusing thread (pid=%d, thread=%s, conversation=%s)", pid, threadID, conversationID)
+	}
+
+	unlock, waited, err := a.turnLock.lock(ctx, threadID)
+	if err != nil {
+		return "", err
+	}
+	defer unlock()
+	if waited {
+		log.Printf("[acp] previous turn finished, starting queued turn (thread=%s)", threadID)
 	}
 
 	// Register turn event channel
@@ -769,7 +738,9 @@ func (a *ACPAgent) chatCodexAppServer(ctx context.Context, conversationID string
 
 	defer func() {
 		a.notifyMu.Lock()
-		delete(a.turnCh, threadID)
+		if a.turnCh[threadID] == turnCh {
+			delete(a.turnCh, threadID)
+		}
 		a.notifyMu.Unlock()
 	}()
 
@@ -1248,6 +1219,40 @@ func extractPromptResultText(result json.RawMessage) string {
 		}
 	}
 	return strings.Join(parts, "")
+}
+
+// keyedLock is a set of per-key mutexes whose lock honors ctx cancellation.
+type keyedLock struct {
+	mu    sync.Mutex
+	slots map[string]chan struct{}
+}
+
+// lock acquires the mutex for key, reporting whether it had to wait for
+// another holder. The returned unlock must be called exactly once.
+func (l *keyedLock) lock(ctx context.Context, key string) (unlock func(), waited bool, err error) {
+	l.mu.Lock()
+	if l.slots == nil {
+		l.slots = make(map[string]chan struct{})
+	}
+	slot, ok := l.slots[key]
+	if !ok {
+		slot = make(chan struct{}, 1)
+		l.slots[key] = slot
+	}
+	l.mu.Unlock()
+
+	unlock = func() { <-slot }
+	select {
+	case slot <- struct{}{}:
+		return unlock, false, nil
+	default:
+	}
+	select {
+	case slot <- struct{}{}:
+		return unlock, true, nil
+	case <-ctx.Done():
+		return nil, true, ctx.Err()
+	}
 }
 
 // acpStderrWriter forwards the ACP subprocess stderr to the application log
