@@ -2,6 +2,7 @@
 
 微信 ClawBot/iLink → AI Agent（Claude via ACP、Codex app-server 等）的桥接器。Go 单二进制。
 fork 自 fastclaw-ai/weclaw v0.7.1，**不再跟随上游**，不要加回 upstream remote，也不要提议"同步上游"。
+公开仓库：github.com/Tespera/weclaw（`origin`）。`README.md`（英文）与 `README_CN.md`（中文）内容保持一致，改一份必须同步另一份。
 
 ## 构建与发布
 

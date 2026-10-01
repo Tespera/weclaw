@@ -1,76 +1,114 @@
-# WeClaw
+# WeClaw (maintained fork)
 
-微信 AI Agent 桥接器 — 将微信消息接入 AI Agent（Claude、Codex、Gemini、Kimi 等）。
+[中文文档](README_CN.md)
 
-> **关于本仓库**：这是 [fastclaw-ai/weclaw](https://github.com/fastclaw-ai/weclaw) 的独立维护版本，自 v0.9.0 起不再跟随上游（上游 2026-04 后停止更新）。基于上游 v0.7.1，合入了上游 `main`/`dev` 分支中的 Codex `/new` 修复、图片消息、配置覆盖修复，并修复了 ACP 权限审批与模型配置、增加了单实例锁和 launchd 服务管理。变更见 [CHANGELOG.md](CHANGELOG.md)。
+WeChat AI agent bridge: chat with Claude Code, Codex, Gemini, Kimi, Cursor, OpenCode and OpenClaw from WeChat. Built on the WeChat ClawBot (iLink) protocol, a single Go binary; Claude runs over ACP (`claude-agent-acp`).
 
-> 本项目参考 [@tencent-weixin/openclaw-weixin](https://npmx.dev/package/@tencent-weixin/openclaw-weixin) 实现，仅限个人学习，勿做他用。
+> **This is an actively maintained fork of [fastclaw-ai/weclaw](https://github.com/fastclaw-ai/weclaw).** Upstream has had no commits since April 2026. This repository continues from upstream v0.7.1 with bug fixes and new features. Config and login data (`~/.weclaw`) are compatible with upstream, so it is a drop-in replacement. See [CHANGELOG.md](CHANGELOG.md).
+
+> This project is inspired by [@tencent-weixin/openclaw-weixin](https://npmx.dev/package/@tencent-weixin/openclaw-weixin). For personal learning only, not for commercial use.
 
 |                                                 |                                                 |                                                 |
 | :---------------------------------------------: | :---------------------------------------------: | :---------------------------------------------: |
 | <img src="previews/preview1.png" width="280" /> | <img src="previews/preview2.png" width="280" /> | <img src="previews/preview3.png" width="280" /> |
 
-## 快速开始
+## What this fork fixes
 
-需要 Go 1.25+。
+Open upstream issues that are resolved here:
+
+| Problem | Upstream issue | This fork |
+| ------- | -------------- | --------- |
+| Sending a message before the previous reply arrives interrupts it or fails with `agent returned empty response` | [#48](https://github.com/fastclaw-ai/weclaw/issues/48) | Messages to the same session are queued and each gets its own reply (v0.9.5, ACP mode) |
+| `/new` with Codex fails with `unknown variant session/new` | [#60](https://github.com/fastclaw-ai/weclaw/issues/60) | Fixed (v0.9.0) |
+| Cannot send local images or files back to WeChat | [#57](https://github.com/fastclaw-ai/weclaw/issues/57), [#34](https://github.com/fastclaw-ai/weclaw/issues/34) | `weclaw send --media <local path>` for any file type; the agent is told to use it (v0.9.3, v0.9.4) |
+| Images sent from WeChat are ignored by the agent | [#26](https://github.com/fastclaw-ai/weclaw/issues/26) | Images are downloaded and forwarded to ACP agents that accept images (v0.9.0) |
+| Switching the default agent overwrites newer config on disk | [#38](https://github.com/fastclaw-ai/weclaw/issues/38) | Only the `default_agent` field is written (v0.9.0) |
+
+Also:
+
+- **Tools work with the official `claude-agent-acp`.** Upstream only accepted a permission option of kind `allow`; the official adapter offers `allow_once` / `allow_always`, so every tool that needed approval was rejected.
+- **`model` and `mode` apply to Claude.** They are set on each new session via the standard ACP `session/set_config_option`; `mode: bypassPermissions` matches `claude --dangerously-skip-permissions`.
+- **Single-instance lock and a macOS login service.** `weclaw service install` registers a launchd agent (start at login, restart on crash); two bridges can no longer fight over one message queue.
+- **`/new <message>`** starts a new session and asks it right away; `/cwd` takes effect immediately and is saved to the config.
+- Each session gets a short WeChat context, and `system_prompt` is appended to Claude Code's built-in system prompt instead of replacing it.
+
+Full list in [CHANGELOG.md](CHANGELOG.md) (written in Chinese).
+
+## Quick Start
+
+Requires Go 1.25+. Used and tested mainly on macOS; Linux builds and runs (manage it with systemd yourself); Windows builds but is untested.
 
 ```bash
-# 编译并安装到 ~/.local/bin（可用 PREFIX 覆盖）
+git clone https://github.com/Tespera/weclaw.git
+cd weclaw
+
+# Build and install to ~/.local/bin (override with PREFIX); make sure it is on PATH
 make install
 
-# 首次启动：弹出微信扫码登录，之后后台运行
+# First start shows a WeChat QR code to log in, then runs in the background
 weclaw start
 
-# 推荐：注册为登录服务（开机自启、崩溃自动拉起）
+# Recommended on macOS: register as a login service (start at login, restart on crash)
 weclaw service install
 ```
 
-首次启动时，WeClaw 会：
+Later, `weclaw update` pulls the latest code and reinstalls.
 
-1. 显示二维码 — 用微信扫码登录
-2. 自动检测已安装的 AI Agent（Claude、Codex、Gemini 等）
-3. 保存配置到 `~/.weclaw/config.json`
-4. 开始接收和回复微信消息
+On first start, WeClaw will:
 
-使用 `weclaw login` 可以添加更多微信账号。
+1. Show a QR code — scan it with WeChat to log in
+2. Auto-detect installed AI agents (Claude, Codex, Gemini, etc.)
+3. Save config to `~/.weclaw/config.json`
+4. Start receiving and replying to WeChat messages
 
-## 架构
+Use `weclaw login` to add more WeChat accounts.
+
+### Migrating from fastclaw-ai/weclaw
+
+Config and login data live in `~/.weclaw` and are compatible; no need to scan the QR code again.
+
+1. Stop the old version: `weclaw stop`
+2. Remove the old binary so it does not shadow the new one on PATH: upstream `install.sh` installs to `/usr/local/bin/weclaw`, `go install` to `$(go env GOPATH)/bin/weclaw`
+3. Install as in Quick Start and run `weclaw start`
+4. For Claude, prefer ACP: `npm i -g @agentclientprotocol/claude-agent-acp`; see [ACP session options](#acp-session-options-and-environment) below
+
+## How It Works
 
 <p align="center">
   <img src="previews/architecture.png" width="600" />
 </p>
 
-**Agent 接入模式：**
+**Agent modes:**
 
-| 模式 | 工作方式                                                         | 支持的 Agent                                            |
-| ---- | ---------------------------------------------------------------- | ------------------------------------------------------- |
-| ACP  | 长驻子进程，通过 stdio JSON-RPC 通信。速度最快，复用进程和会话。 | Claude, Codex, Kimi, Gemini, Cursor, OpenCode, OpenClaw |
-| CLI  | 每条消息启动一个新进程，支持通过 `--resume` 恢复会话。           | Claude (`claude -p`)、Codex (`codex exec`)              |
-| HTTP | OpenAI 兼容的 Chat Completions API。                             | OpenClaw（HTTP 回退）                                   |
+| Mode | How it works | Agents |
+| ---- | ------------ | ------ |
+| ACP  | Long-running subprocess, JSON-RPC over stdio. Fastest — reuses the process and sessions. | Claude, Codex, Kimi, Gemini, Cursor, OpenCode, OpenClaw |
+| CLI  | Spawns a new process per message. Resumes sessions via `--resume`. | Claude (`claude -p`), Codex (`codex exec`) |
+| HTTP | OpenAI-compatible Chat Completions API. | OpenClaw (HTTP fallback) |
 
-同时存在 ACP 和 CLI 时，自动优先选择 ACP。
+When both ACP and CLI are available, ACP is chosen.
 
-## 聊天命令
+## Chat Commands
 
-在微信中发送以下命令：
+Send these as WeChat messages:
 
-| 命令                    | 说明                     |
-| ----------------------- | ------------------------ |
-| `你好`                  | 发送给默认 Agent         |
-| `/codex 写一个排序函数` | 发送给指定 Agent         |
-| `/cc 解释一下这段代码`  | 通过别名发送             |
-| `/claude`               | 切换默认 Agent 为 Claude |
-| `/cwd /path/to/project` | 切换工作区：所有 Agent 生效、写回配置，并立即新建会话 |
-| `/cwd`                  | 查看当前工作区 |
-| `/new`                  | 开始新对话（清除会话）   |
-| `/new 帮我看下这个报错` | 开始新对话并直接发送这条消息 |
-| `/info`                 | 查看当前 Agent 信息（含工作区） |
-| `/help`                 | 查看帮助信息             |
+| Command | Description |
+| ------- | ----------- |
+| `hello` | Send to the default agent |
+| `/codex write a sort function` | Send to a specific agent |
+| `/cc explain this code` | Send via an alias |
+| `/claude` | Switch the default agent to Claude |
+| `/cwd /path/to/project` | Switch workspace: applies to all agents, saved to config, starts a new session |
+| `/cwd` | Show the current workspace |
+| `/new` | Start a new conversation (clear the session) |
+| `/new look at this error` | Start a new conversation and send this message to it |
+| `/info` | Show current agent info (including workspace) |
+| `/help` | Show help |
 
-### 快捷别名
+### Aliases
 
-| 别名   | Agent    |
-| ------ | -------- |
+| Alias | Agent |
+| ----- | ----- |
 | `/cc`  | Claude   |
 | `/cx`  | Codex    |
 | `/cs`  | Cursor   |
@@ -79,7 +117,7 @@ weclaw service install
 | `/ocd` | OpenCode |
 | `/oc`  | OpenClaw |
 
-也可以在配置文件中为每个 Agent 自定义触发命令：
+You can define custom triggers per agent in the config:
 
 ```json
 {
@@ -92,78 +130,78 @@ weclaw service install
 }
 ```
 
-然后 `/ai 你好` 或 `/c 你好` 就会路由到 claude。
+Then `/ai hello` or `/c hello` routes to claude.
 
-切换默认 Agent 会写入配置文件，重启后仍然生效。
+Switching the default agent is saved to the config file and survives restarts.
 
-## 富媒体消息
+## Media Messages
 
-WeClaw 支持收发图片、视频、文件和语音消息。
+WeClaw sends and receives images, video, files and voice messages.
 
-**语音消息：** 在微信中发送语音消息时，WeClaw 会自动使用微信的语音转文字功能，将转写后的文本发送给 AI Agent。重复的语音消息事件会自动去重。
+**Voice:** WeChat's own speech-to-text transcription is forwarded to the agent as text. Duplicate voice events are de-duplicated.
 
-**Agent 回复自动处理：** 当 AI Agent 返回包含图片的 markdown（`![](url)`）时，WeClaw 会自动提取图片 URL，下载文件，上传到微信 CDN（AES-128-ECB 加密），然后作为图片消息发送。
+**Images in agent replies:** when the agent returns markdown images (`![](url)`), WeClaw downloads them, uploads to the WeChat CDN (AES-128-ECB encrypted) and sends them as image messages.
 
-**Markdown 转换：** Agent 的回复会自动从 markdown 转为纯文本再发送 — 代码块去掉围栏、链接只保留文字、加粗斜体标记去除等。
+**Markdown:** replies are converted to plain text before sending — code fences removed, links reduced to their text, bold/italic markers stripped, and so on.
 
-## 主动推送消息
+## Proactive Messages
 
-无需等待用户发消息，主动向微信用户推送消息。
+Push messages to a WeChat user without waiting for them to write first.
 
-**命令行：**
+**CLI:**
 
 ```bash
-# 发送文本
-weclaw send --to "user_id@im.wechat" --text "你好，来自 weclaw"
+# Text
+weclaw send --to "user_id@im.wechat" --text "Hello from weclaw"
 
-# 发送图片
+# Image
 weclaw send --to "user_id@im.wechat" --media "https://example.com/photo.png"
 
-# 发送文本 + 图片
-weclaw send --to "user_id@im.wechat" --text "看看这个" --media "https://example.com/photo.png"
+# Text + image
+weclaw send --to "user_id@im.wechat" --text "Check this out" --media "https://example.com/photo.png"
 
-# 发送文件
+# File
 weclaw send --to "user_id@im.wechat" --media "https://example.com/report.pdf"
 
-# 发送本地文件（任意类型；支持 ~、相对路径、file://；--media 可重复）
+# Local files (any type; ~, relative paths and file:// work; --media is repeatable)
 weclaw send --to "user_id@im.wechat" --media ~/Desktop/report.pdf --media ./chart.png
 ```
 
-所有 `--media` 会先校验（文件存在且是普通文件），全部通过后才开始发送，不会只发出一半。
+All `--media` values are validated first (exists and is a regular file); nothing is sent unless all pass, so you never get half a message.
 
-**HTTP API**（`weclaw start` 运行时，默认监听 `127.0.0.1:18011`）：
+**HTTP API** (while `weclaw start` is running, default `127.0.0.1:18011`):
 
 ```bash
-# 发送文本
+# Text
 curl -X POST http://127.0.0.1:18011/api/send \
   -H "Content-Type: application/json" \
-  -d '{"to": "user_id@im.wechat", "text": "你好，来自 weclaw"}'
+  -d '{"to": "user_id@im.wechat", "text": "Hello from weclaw"}'
 
-# 发送图片
+# Image
 curl -X POST http://127.0.0.1:18011/api/send \
   -H "Content-Type: application/json" \
   -d '{"to": "user_id@im.wechat", "media": "https://example.com/photo.png"}'
 
-# 发送本地文件（必须是绝对路径）
+# Local file (absolute path required)
 curl -X POST http://127.0.0.1:18011/api/send \
   -H "Content-Type: application/json" \
   -d '{"to": "user_id@im.wechat", "media": "/Users/me/Desktop/report.pdf"}'
 
-# 发送文本 + 媒体
+# Text + media
 curl -X POST http://127.0.0.1:18011/api/send \
   -H "Content-Type: application/json" \
-  -d '{"to": "user_id@im.wechat", "text": "看看这个", "media": "https://example.com/photo.png"}'
+  -d '{"to": "user_id@im.wechat", "text": "Check this out", "media": "https://example.com/photo.png"}'
 ```
 
-`media` 接受网址或本地绝对路径（旧字段 `media_url` 仍可用）。本地路径只接受来自本机（127.0.0.1 / ::1）的请求，即使把 API 绑到了其他地址也不会让远程调用读取本地文件。
+`media` takes a URL or an absolute local path (the old `media_url` field still works). Local paths are only accepted from loopback (127.0.0.1 / ::1) callers, so binding the API to another address does not let remote callers read local files.
 
-媒体按类型发送：图片（png、jpg、gif、webp、bmp）按图片发，视频（mp4、mov、webm、mkv、avi）按视频发，其余任意类型按文件发。
+Media is sent by type: images (png, jpg, gif, webp, bmp) as images, video (mp4, mov, webm, mkv, avi) as video, anything else as a file.
 
-设置 `WECLAW_API_ADDR` 环境变量可更改监听地址（如 `0.0.0.0:18011`）。
+Set `WECLAW_API_ADDR` to change the listen address (e.g. `0.0.0.0:18011`).
 
-## 配置
+## Configuration
 
-配置文件路径：`~/.weclaw/config.json`
+Config file: `~/.weclaw/config.json`
 
 ```json
 {
@@ -194,38 +232,34 @@ curl -X POST http://127.0.0.1:18011/api/send \
 }
 ```
 
-环境变量：
+Environment variables:
 
-- `WECLAW_DEFAULT_AGENT` — 覆盖默认 Agent
-- `OPENCLAW_GATEWAY_URL` — OpenClaw HTTP 回退地址
-- `OPENCLAW_GATEWAY_TOKEN` — OpenClaw API Token
+- `WECLAW_DEFAULT_AGENT` — override the default agent
+- `OPENCLAW_GATEWAY_URL` — OpenClaw HTTP fallback endpoint
+- `OPENCLAW_GATEWAY_TOKEN` — OpenClaw API token
 
-自定义 agent cli 环境变量
+Per-agent environment variables are set with `env`:
 
 ```json
 {
-  "default_agent": "...",
   "agents": {
-    "...": {
-      ...
+    "claude": {
       "env": {
         "ENV_NAME": "ENV_VALUE"
       }
-    },
+    }
   }
 }
 ```
 
-### 权限配置
+### Permissions (CLI agents)
 
-部分 Agent 默认需要交互式权限确认，在微信场景下无法操作会导致卡住。可通过 `args` 配置跳过：
+Some CLI agents ask for interactive permission confirmation, which cannot be answered from WeChat and hangs the request. Skip it with `args`:
 
-| Agent | 参数 | 说明 |
-|-------|------|------|
-| Claude (CLI) | `--dangerously-skip-permissions` | 跳过所有工具权限确认 |
-| Codex (CLI) | `--skip-git-repo-check` | 允许在非 git 仓库目录运行 |
-
-配置示例：
+| Agent | Argument | Effect |
+|-------|----------|--------|
+| Claude (CLI) | `--dangerously-skip-permissions` | Skip all tool permission prompts |
+| Codex (CLI) | `--skip-git-repo-check` | Allow running outside a git repository |
 
 ```json
 {
@@ -244,13 +278,13 @@ curl -X POST http://127.0.0.1:18011/api/send \
 }
 ```
 
-通过 `cwd` 指定 Agent 的工作目录（workspace）。不设置则默认为 `~/.weclaw/workspace`。
+`cwd` sets the agent's working directory (workspace); default `~/.weclaw/workspace`.
 
-> **注意：** 这些参数会跳过安全检查，请了解风险后再启用。
+> **Note:** these arguments bypass safety checks. Enable them only if you understand the risk.
 
-### ACP 会话选项与环境变量
+### ACP session options and environment
 
-ACP Agent 的 `model` 和 `mode` 会在每个新会话上通过 ACP 标准方法 `session/set_config_option` 设置；`env` 会传给 Agent 子进程。例如让微信里的 Claude 与终端里 `TZ=Europe/Oslo claude --dangerously-skip-permissions` 行为一致：
+For ACP agents, `model` and `mode` are applied to each new session via the standard ACP `session/set_config_option`; `env` is passed to the agent subprocess. For example, to make Claude in WeChat behave like `TZ=Europe/Oslo claude --dangerously-skip-permissions` in a terminal:
 
 ```json
 {
@@ -264,92 +298,85 @@ ACP Agent 的 `model` 和 `mode` 会在每个新会话上通过 ACP 标准方法
 }
 ```
 
-会话的工作区决定加载哪些项目上下文：项目 CLAUDE.md、`.mcp.json`、项目级 skills，以及按目录区分的 Claude 自动记忆。想和终端里从某目录启动的 Claude 一致，就把 `cwd` 设成那个目录。claude.ai 账号里的连接器（MCP）在 SDK 模式下默认关闭，需要时在 `env` 里加 `"ENABLE_CLAUDEAI_MCP_SERVERS": "true"`。
+The session workspace decides which project context loads: the project CLAUDE.md, `.mcp.json`, project skills and Claude's per-directory auto memory. To match a Claude started from some directory in your terminal, set `cwd` to that directory. Connectors (MCP) from your claude.ai account are off in SDK mode by default; add `"ENABLE_CLAUDEAI_MCP_SERVERS": "true"` to `env` to enable them.
 
-每个新会话还会自动追加一段微信会话说明（当前用户的微信 ID、如何用 `weclaw send --media <本地路径>` 发文件），再加上配置里的 `system_prompt`。二者通过 `session/new` 的 `_meta.systemPrompt.append` 追加到 Agent 自带的系统提示之后，不会替换它。
+Each new session also gets a short WeChat context (the current user's WeChat ID and how to send files with `weclaw send --media <local path>`), followed by the configured `system_prompt`. Both are appended after the agent's built-in system prompt via `_meta.systemPrompt.append` on `session/new`; they do not replace it.
 
-`mode` 可选值由 Agent 决定（claude-agent-acp：`default`、`acceptEdits`、`plan`、`bypassPermissions` 等）。未设置 `mode` 时，ACP 模式仍会自动批准所有权限请求。修改配置后执行 `weclaw restart`。
+Valid `mode` values depend on the agent (claude-agent-acp: `default`, `acceptEdits`, `plan`, `bypassPermissions`, …). Without `mode`, ACP mode still auto-approves every permission request. Run `weclaw restart` after changing the config.
 
-## 运行与服务
-
-```bash
-weclaw start      # 启动（后台运行；已注册服务时交给 launchd）
-weclaw status     # 查看状态
-weclaw restart    # 重启
-weclaw stop       # 停止
-weclaw start -f   # 前台运行（调试用）
-```
-
-日志输出到 `~/.weclaw/weclaw.log`。
-
-同一时间只允许一个 bridge 运行：进程启动时对 `~/.weclaw/weclaw.lock` 加 `flock`，拿不到锁就报错退出（锁随进程退出自动释放，崩溃也不会残留）。两个实例会抢同一个微信消息队列，所以这是硬约束。
-
-### 登录服务（macOS，推荐）
+## Running as a Service
 
 ```bash
-weclaw service install     # 生成 ~/Library/LaunchAgents/com.weclaw.bridge.plist 并启动
-weclaw service uninstall   # 停止并移除
+weclaw start      # start (in the background; via launchd once the service is installed)
+weclaw status     # show status
+weclaw restart    # restart
+weclaw stop       # stop
+weclaw start -f   # run in the foreground (debugging)
 ```
 
-注册后 `start/stop/restart` 自动改走 `launchctl`，不再自行派生后台进程。`stop` 会卸载任务，下次登录或 `weclaw start` 时恢复。plist 会记录安装时 shell 的 `PATH`，保证 node（ACP 适配器）、claude、codex 等能被找到；这些工具的安装位置变了，重新执行一次 `weclaw service install` 即可。
+Logs go to `~/.weclaw/weclaw.log`.
 
-Linux 暂不提供服务管理，可自行用 systemd 运行 `weclaw start --foreground`（必须带 `--foreground`，否则进程会派生后台后立即退出，被 systemd 反复拉起）。
+Only one bridge may run at a time: the process takes a `flock` on `~/.weclaw/weclaw.lock` and exits if it cannot (the lock is released when the process exits, including crashes). Two instances would compete for the same WeChat message queue, so this is a hard rule.
+
+### Login service (macOS, recommended)
+
+```bash
+weclaw service install     # writes ~/Library/LaunchAgents/com.weclaw.bridge.plist and starts it
+weclaw service uninstall   # stops and removes it
+```
+
+Once installed, `start/stop/restart` go through `launchctl` instead of forking a background process. `stop` unloads the job; it comes back at next login or `weclaw start`. The plist records the shell `PATH` at install time so node (for ACP adapters), claude, codex and friends can be found; if they move, run `weclaw service install` again.
+
+Linux has no built-in service management yet. Run `weclaw start --foreground` under systemd (`--foreground` is required; otherwise the process forks to the background and exits, and systemd keeps restarting it).
 
 ## Docker
 
 ```bash
-# 构建
+# Build
 docker build -t weclaw .
 
-# 登录（交互式，扫描二维码）
+# Log in (interactive, scan the QR code)
 docker run -it -v ~/.weclaw:/root/.weclaw weclaw login
 
-# 使用 HTTP Agent 启动
+# Start with an HTTP agent
 docker run -d --name weclaw \
   -v ~/.weclaw:/root/.weclaw \
   -e OPENCLAW_GATEWAY_URL=https://api.example.com \
   -e OPENCLAW_GATEWAY_TOKEN=sk-xxx \
   weclaw
 
-# 查看日志
+# Logs
 docker logs -f weclaw
 ```
 
-> 注意：ACP 和 CLI 模式需要容器内有对应的 Agent 二进制文件。
-> 默认镜像只包含 WeClaw 本体。如需使用 ACP/CLI Agent，请挂载二进制文件或构建自定义镜像。
-> HTTP 模式开箱即用。
+> ACP and CLI modes need the agent binaries inside the container. The default image contains only WeClaw; mount the binaries or build a custom image. HTTP mode works out of the box.
 
-## 更新与版本
+## Updates and Versions
 
 ```bash
-weclaw update     # 从源码仓库重新编译安装（有远程则先 git pull --ff-only），运行中会自动重启
-weclaw version    # 查看当前版本
+weclaw update     # rebuild and reinstall from the source checkout (git pull --ff-only first if it has a remote); restarts a running bridge
+weclaw version    # show the version
 ```
 
-`update` 使用编译时记录的源码目录（`make install` 自动写入），等价于在仓库里执行 `make install`。安装采用"写临时文件再改名"，不会原地覆盖正在运行的二进制。
+`update` uses the source directory recorded at build time (written by `make install`) and is equivalent to running `make install` there. The binary is replaced by writing a temp file and renaming it, never overwritten in place.
 
-版本号来自 git tag（`git describe`）。发版流程：更新 `CHANGELOG.md` → 提交 → `git tag vX.Y.Z` → `make install`。
+Versions come from git tags (`git describe`). Release flow: update `CHANGELOG.md` → commit → `git tag vX.Y.Z` → `make install`.
 
-## 开发
+## Development
 
 ```bash
-# 热重载
-make dev
+make dev      # hot reload
+make build    # build to ./bin/weclaw
+make test     # tests
 
-# 编译到 ./bin/weclaw
-make build
-
-# 测试
-make test
-
-# ACP 端到端测试（真实调用 claude-agent-acp，默认跳过）
+# ACP end-to-end test (calls the real claude-agent-acp; skipped by default)
 WECLAW_ACP_E2E=1 go test ./agent -run TestACPModelE2E -v
 ```
 
-## 致谢
+## Credits
 
-基于 [fastclaw-ai/weclaw](https://github.com/fastclaw-ai/weclaw) 及其[贡献者](https://github.com/fastclaw-ai/weclaw/graphs/contributors)的工作。
+Based on the work of [fastclaw-ai/weclaw](https://github.com/fastclaw-ai/weclaw) and its [contributors](https://github.com/fastclaw-ai/weclaw/graphs/contributors).
 
-## 许可证
+## License
 
 [MIT](LICENSE)
