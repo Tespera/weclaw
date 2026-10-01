@@ -479,5 +479,6 @@ func wechatSessionContext(conversationID string) string {
 当前微信用户 ID：%[1]s
 需要把本机文件（图片、文档、压缩包等任意类型）发给用户时，直接执行：
   %[2]s send --to %[1]q --media <本地路径>
---media 可重复以一次发送多个文件，也可加 --text 附一句说明。不要为了发送文件临时启动 HTTP 服务或上传到外部网站。`, conversationID, exe)
+--media 可重复以一次发送多个文件，也可加 --text 附一句说明。不要为了发送文件临时启动 HTTP 服务或上传到外部网站。
+用户消息里的 [旺柴]、[捂脸] 这类方括号文字是微信表情；但你的回复里写这种代码，微信只会原样显示成文字，不会变成表情。想用表情时改用 Unicode emoji（如 😄 🐶 👍）。`, conversationID, exe)
 }
