@@ -2,6 +2,12 @@
 
 本仓库自 v0.9.0 起独立维护，不再跟随 [fastclaw-ai/weclaw](https://github.com/fastclaw-ai/weclaw)。更早的版本见上游。
 
+## v0.9.6 — 2026-10-06
+
+### 修复
+- `/new`、`/clear`、`/cwd` 换会话后，旧会话的 Claude Code 进程一直留在后台（每个几百 MB），直到 weclaw 重启才释放：weclaw 只丢掉了本地映射，从没通知 claude-agent-acp 关闭旧会话。现在换会话时发 `session/close` 结束旧进程；旧会话上还有回复在生成时，等它回完再关，不打断。仅在 Agent 声明支持 `sessionCapabilities.close` 时发送
+- 停止 weclaw 时直接强杀 Agent 进程，claude-agent-acp 来不及关闭各会话。现在先关闭 stdin 让它自行清理退出，5 秒内没退出再强杀
+
 ## v0.9.5 — 2026-10-01
 
 ### 修复
