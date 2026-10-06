@@ -2,6 +2,12 @@
 
 本仓库自 v0.9.0 起独立维护，不再跟随 [fastclaw-ai/weclaw](https://github.com/fastclaw-ai/weclaw)。更早的版本见上游。
 
+## v0.9.7 — 2026-10-06
+
+### 修复
+- 更新 weclaw（`make install` / `weclaw update`）后重启，新进程总被系统杀掉一次，微信要断约 10 秒才恢复：launchd 把启动约束绑在任务首次拉起时的二进制上，重编译后签名变了，`launchctl kickstart -k` 拉起的新二进制被判为违反启动约束（`OS_REASON_CODESIGNING`），要等 launchd 10 秒后重试。现在 `weclaw restart` 改为重新注册任务（bootout 后 bootstrap），新二进制一次拉起
+- 从服务内部执行 `weclaw restart`（比如在微信里让 Agent 跑 `weclaw update`）时，bootout 会先杀掉发起者，任务卸载后就没人重新注册。这种情况改由脱离会话的后台进程完成重载，输出写入服务日志
+
 ## v0.9.6 — 2026-10-06
 
 ### 修复
