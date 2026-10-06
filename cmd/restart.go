@@ -18,8 +18,13 @@ var restartCmd = &cobra.Command{
 	Short: "Restart the weclaw bridge",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if serviceInstalled() {
-			if err := serviceRestart(); err != nil {
+			detached, err := serviceRestart()
+			if err != nil {
 				return err
+			}
+			if detached {
+				fmt.Printf("weclaw service is restarting in the background (log: %s)\n", logFile())
+				return nil
 			}
 			if pid := waitServicePid(5 * time.Second); pid > 0 {
 				fmt.Printf("weclaw service restarted (pid=%d)\n", pid)

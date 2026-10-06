@@ -48,10 +48,13 @@ func withFakeLaunchctl(t *testing.T, loaded bool) *fakeLaunchctl {
 	t.Helper()
 	t.Setenv("HOME", t.TempDir())
 	f := &fakeLaunchctl{loaded: loaded, pid: "4242"}
-	orig, origTimeout, origPoll := launchctl, serviceStopTimeout, servicePollInterval
+	orig, origTimeout, origPoll, origInside := launchctl, serviceStopTimeout, servicePollInterval, insideService
 	launchctl = f.run
 	serviceStopTimeout, servicePollInterval = 200*time.Millisecond, time.Millisecond
-	t.Cleanup(func() { launchctl, serviceStopTimeout, servicePollInterval = orig, origTimeout, origPoll })
+	insideService = func() bool { return false }
+	t.Cleanup(func() {
+		launchctl, serviceStopTimeout, servicePollInterval, insideService = orig, origTimeout, origPoll, origInside
+	})
 	return f
 }
 
@@ -84,8 +87,7 @@ func TestServiceLifecycle(t *testing.T) {
 	}{
 		{"start when loaded kicks", true, serviceStart, "kickstart"},
 		{"start when unloaded bootstraps", false, serviceStart, "bootstrap"},
-		{"restart when loaded kills and restarts", true, serviceRestart, "kickstart -k"},
-		{"restart when unloaded bootstraps", false, serviceRestart, "bootstrap"},
+		{"restart when unloaded bootstraps", false, func() error { _, err := serviceRestart(); return err }, "bootstrap"},
 		{"stop when loaded boots out", true, serviceStop, "bootout"},
 	}
 	for _, tt := range tests {
@@ -238,5 +240,65 @@ func TestServiceStopTimesOut(t *testing.T) {
 	f.lingering = 1 << 30
 	if err := serviceStop(); err == nil || !strings.Contains(err.Error(), "did not unload") {
 		t.Fatalf("serviceStop error = %v, want unload timeout", err)
+	}
+}
+
+// A rebuilt binary violates the launch constraint launchd pinned to the old one,
+// so `kickstart -k` gets its first spawn killed (OS_REASON_CODESIGNING) and the
+// bridge stays down for ThrottleInterval. Restart must reload the job instead,
+// and must wait for the old job to unload before bootstrapping.
+func TestServiceRestartReloadsJob(t *testing.T) {
+	f := withFakeLaunchctl(t, true)
+	f.lingering = 3
+	detached, err := serviceRestart()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if detached {
+		t.Fatal("restart from outside the service should not detach")
+	}
+	if !f.loaded {
+		t.Fatalf("service not loaded after restart; calls = %q", f.calls)
+	}
+	if m := f.mutations(); len(m) != 2 || m[0] != "bootout" || m[1] != "bootstrap" {
+		t.Fatalf("launchctl mutations = %q, want [bootout bootstrap]", m)
+	}
+}
+
+// From inside the service, bootout would kill the caller before it could
+// bootstrap again, so the reload must be handed to a detached process.
+func TestServiceRestartInsideServiceDetaches(t *testing.T) {
+	f := withFakeLaunchctl(t, true)
+	insideService = func() bool { return true }
+	spawned := 0
+	origSpawn := spawnDetachedReload
+	spawnDetachedReload = func() error { spawned++; return nil }
+	t.Cleanup(func() { spawnDetachedReload = origSpawn })
+
+	detached, err := serviceRestart()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !detached || spawned != 1 {
+		t.Fatalf("detached = %v, spawned = %d; want true, 1", detached, spawned)
+	}
+	if m := f.mutations(); len(m) != 0 {
+		t.Fatalf("caller ran launchctl mutations %q itself, want none", m)
+	}
+}
+
+func TestIsDescendantOf(t *testing.T) {
+	self, parent := os.Getpid(), os.Getppid()
+	if !isDescendantOf(self, self) {
+		t.Error("a process should count as descending from itself")
+	}
+	if !isDescendantOf(self, parent) {
+		t.Error("this process should descend from its parent")
+	}
+	if isDescendantOf(parent, self) {
+		t.Error("the parent should not descend from this process")
+	}
+	if isDescendantOf(self, 0) || isDescendantOf(self, 1) {
+		t.Error("pid 0/1 must not count as the service")
 	}
 }

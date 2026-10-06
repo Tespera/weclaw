@@ -12,8 +12,11 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"syscall"
 	"text/template"
 	"time"
+
+	"golang.org/x/sys/unix"
 )
 
 // launchdLabel identifies the weclaw LaunchAgent.
@@ -87,14 +90,79 @@ func serviceStop() error {
 	return nil
 }
 
-func serviceRestart() error {
+// serviceRestart restarts the job by reloading it rather than `kickstart -k`.
+// launchd pins a launch constraint to the executable the job first spawned; a
+// rebuilt binary (ad-hoc signed, so a new cdhash) violates it and the first
+// spawn is killed with OS_REASON_CODESIGNING, leaving the bridge down until
+// launchd retries after ThrottleInterval. Bootstrapping the job afresh records
+// the constraint for the binary now on disk.
+//
+// When the caller runs inside the service (e.g. `weclaw update` issued by an
+// agent from WeChat), bootout would kill it before it could bootstrap again,
+// so the reload is handed to a detached process; detached reports that case.
+func serviceRestart() (detached bool, err error) {
 	if !serviceLoaded() {
-		return serviceStart()
+		return false, serviceStart()
 	}
-	if out, err := launchctl("kickstart", "-k", launchdTarget()); err != nil {
-		return fmt.Errorf("launchctl kickstart -k: %v: %s", err, bytes.TrimSpace(out))
+	if insideService() {
+		return true, spawnDetachedReload()
 	}
-	return nil
+	return false, serviceReload()
+}
+
+// serviceReload boots the job out, waits for launchd to unload it, and
+// bootstraps it again.
+func serviceReload() error {
+	if err := serviceStop(); err != nil {
+		return err
+	}
+	return serviceStart()
+}
+
+// insideService reports whether this process descends from the running job.
+// Replaced in tests.
+var insideService = func() bool {
+	return isDescendantOf(os.Getpid(), servicePid())
+}
+
+// isDescendantOf reports whether pid is ancestor or descends from it.
+func isDescendantOf(pid, ancestor int) bool {
+	if ancestor <= 1 {
+		return false
+	}
+	for pid > 1 {
+		if pid == ancestor {
+			return true
+		}
+		kp, err := unix.SysctlKinfoProc("kern.proc.pid", pid)
+		if err != nil {
+			return false
+		}
+		pid = int(kp.Eproc.Ppid)
+	}
+	return false
+}
+
+// spawnDetachedReload runs `weclaw service reload` in its own session, so the
+// bootout's teardown of the job's process group does not take it down too.
+// Its output goes to the service log.
+var spawnDetachedReload = func() error {
+	exe, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("resolve executable: %w", err)
+	}
+	logf, err := os.OpenFile(logFile(), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		return fmt.Errorf("open log: %w", err)
+	}
+	defer logf.Close()
+	c := exec.Command(exe, "service", "reload")
+	c.Stdout, c.Stderr = logf, logf
+	c.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	if err := c.Start(); err != nil {
+		return fmt.Errorf("start detached reload: %w", err)
+	}
+	return c.Process.Release()
 }
 
 var launchdPidRe = regexp.MustCompile(`(?m)^\s*pid = (\d+)`)
