@@ -2,6 +2,11 @@
 
 本仓库自 v0.9.0 起独立维护，不再跟随 [fastclaw-ai/weclaw](https://github.com/fastclaw-ai/weclaw)。更早的版本见上游。
 
+## v0.9.8 — 2026-10-07
+
+### 修复
+- 回复生成到一半时 weclaw 重启（更新、`weclaw restart`，包括在微信里让 Agent 执行），这条回复会悄无声息地丢掉：Agent 这一轮被取消，连报错都发不出去，用户只看到没反应。现在停止时记下被打断的聊天（`~/.weclaw/interrupted.json`），新实例启动后给每个聊天发一条"weclaw 已重启（版本）……需要的话请重新发送"，发完即删；超过一天的记录不再提示，保存的 context token 失效时改为普通发送
+
 ## v0.9.7 — 2026-10-06
 
 ### 修复
