@@ -46,6 +46,10 @@ type Handler struct {
 	contextTokens sync.Map // map[userID]contextToken
 	saveDir       string   // directory to save images/files to
 	seenMsgs      sync.Map // map[int64]time.Time — dedup by message_id
+
+	inflight      sync.WaitGroup // messages being handled
+	interruptedMu sync.Mutex
+	interrupted   []InterruptedReply // replies cut off by shutdown
 }
 
 // NewHandler creates a new message handler.
@@ -295,6 +299,9 @@ func (h *Handler) parseCommand(text string) ([]string, string) {
 
 // HandleMessage processes a single incoming message.
 func (h *Handler) HandleMessage(ctx context.Context, client *ilink.Client, msg ilink.WeixinMessage) {
+	h.inflight.Add(1)
+	defer h.inflight.Done()
+
 	// Only process user messages that are finished
 	if msg.MessageType != ilink.MessageTypeUser {
 		return
@@ -537,6 +544,14 @@ func (h *Handler) broadcastToAgents(ctx context.Context, client *ilink.Client, m
 
 // sendReplyWithMedia sends a text reply and any extracted image URLs.
 func (h *Handler) sendReplyWithMedia(ctx context.Context, client *ilink.Client, msg ilink.WeixinMessage, agentName, reply, clientID string) {
+	// Every agent reply ends here. Once shutdown has begun the reply (usually
+	// "Error: context canceled") cannot be sent; leave it to the next instance
+	// to tell the user instead of dropping it silently.
+	if ctx.Err() != nil {
+		h.recordInterrupted(client, msg)
+		return
+	}
+
 	imageURLs := ExtractImageURLs(reply)
 	attachmentPaths := extractLocalAttachmentPaths(reply)
 	allowedRoots := h.allowedAttachmentRoots(agentName)

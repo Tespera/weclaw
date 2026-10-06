@@ -29,6 +29,7 @@ Also:
 - **Tools work with the official `claude-agent-acp`.** Upstream only accepted a permission option of kind `allow`; the official adapter offers `allow_once` / `allow_always`, so every tool that needed approval was rejected.
 - **`model` and `mode` apply to Claude.** They are set on each new session via the standard ACP `session/set_config_option`; `mode: bypassPermissions` matches `claude --dangerously-skip-permissions`.
 - **Single-instance lock and a macOS login service.** `weclaw service install` registers a launchd agent (start at login, restart on crash); two bridges can no longer fight over one message queue.
+- **Restarts don't swallow replies.** If the bridge restarts (update, `weclaw restart`, even one issued from WeChat) while a reply is being generated, the chat is told afterwards to resend instead of never hearing back; `/new` and `/cwd` also close the old session's Claude Code process.
 - **`/new <message>`** starts a new session and asks it right away; `/cwd` takes effect immediately and is saved to the config.
 - Each session gets a short WeChat context, and `system_prompt` is appended to Claude Code's built-in system prompt instead of replacing it.
 

@@ -29,6 +29,7 @@
 - **配合官方 `claude-agent-acp` 能正常用工具**：上游只认 `allow` 这种审批选项，官方适配器给的是 `allow_once` / `allow_always`，结果所有需要审批的工具都被拒绝。
 - **`model` / `mode` 配置对 Claude 生效**：通过 ACP 标准的 `session/set_config_option` 设置，`mode: bypassPermissions` 等价于 `claude --dangerously-skip-permissions`。
 - **单实例锁 + macOS 登录服务**：`weclaw service install` 注册 launchd，开机自启、崩溃拉起；两个实例不会再抢同一个消息队列。
+- **重启不吞回复**：回复生成到一半时 weclaw 重启（更新、`weclaw restart`，包括在微信里让 Agent 执行），重启后会提示该聊天重新发送，不再石沉大海；`/new`、`/cwd` 也会关掉旧会话的 Claude Code 进程。
 - **`/new 消息`** 新建会话并直接提问；`/cwd` 立即生效并写回配置。
 - 每个会话自动带上微信场景说明，`system_prompt` 追加到 Claude Code 自带的系统提示之后，而不是替换它。
 

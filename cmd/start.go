@@ -186,6 +186,9 @@ func runStart(cmd *cobra.Command, args []string) error {
 	if apiAddrFlag != "" {
 		apiAddr = apiAddrFlag
 	}
+	// Tell chats whose replies the previous instance's shutdown cut off.
+	go messaging.NotifyInterrupted(ctx, interruptedFile(), clients, Version)
+
 	apiServer := api.NewServer(clients, apiAddr)
 	go func() {
 		if err := apiServer.Run(ctx); err != nil {
@@ -207,8 +210,12 @@ func runStart(cmd *cobra.Command, args []string) error {
 
 	wg.Wait()
 	log.Println("All monitors stopped")
+	handler.WaitInflight(5 * time.Second)
 	handler.StopAgents()
 	log.Println("Agents stopped")
+	if err := handler.SaveInterrupted(interruptedFile()); err != nil {
+		log.Printf("Failed to save interrupted replies: %v", err)
+	}
 	return nil
 }
 
@@ -372,6 +379,12 @@ func pidFile() string {
 
 func lockFile() string {
 	return filepath.Join(weclawDir(), "weclaw.lock")
+}
+
+// interruptedFile records chats whose replies were cut off by shutdown, for the
+// next instance to notify.
+func interruptedFile() string {
+	return filepath.Join(weclawDir(), "interrupted.json")
 }
 
 func logFile() string {
