@@ -18,11 +18,14 @@ type fakeACP struct {
 	inflight   atomic.Int64
 	overlapped atomic.Bool
 	newGate    func(n int64) // called inside session/new n (1-based)
+	promptGate func()        // called inside every session/prompt
+	closed     chan string   // session IDs passed to session/close
 }
 
 func newFakeACP() *fakeACP {
-	f := &fakeACP{a: NewACPAgent(ACPAgentConfig{Cwd: "/tmp"})}
+	f := &fakeACP{a: NewACPAgent(ACPAgentConfig{Cwd: "/tmp"}), closed: make(chan string, 16)}
 	f.a.started = true
+	f.a.canCloseSession = true
 	f.a.rpcCall = f.rpc
 	return f
 }
@@ -35,8 +38,14 @@ func (f *fakeACP) rpc(ctx context.Context, method string, params interface{}) (j
 			f.newGate(n)
 		}
 		return json.RawMessage(fmt.Sprintf(`{"sessionId":"s%d"}`, n)), nil
+	case "session/close":
+		f.closed <- params.(closeSessionParams).SessionID
+		return json.RawMessage(`{}`), nil
 	case "session/prompt":
 		p := params.(promptParams)
+		if f.promptGate != nil {
+			f.promptGate()
+		}
 		if f.inflight.Add(1) > 1 {
 			f.overlapped.Store(true)
 		}
@@ -153,4 +162,93 @@ func TestKeyedLockHonorsContext(t *testing.T) {
 	if _, waited, err := l.lock(context.Background(), "k"); err != nil || waited {
 		t.Fatalf("relock after unlock: waited=%v err=%v", waited, err)
 	}
+}
+
+func waitClosed(t *testing.T, f *fakeACP, want string) {
+	t.Helper()
+	select {
+	case got := <-f.closed:
+		if got != want {
+			t.Fatalf("closed session %q, want %q", got, want)
+		}
+	case <-time.After(time.Second):
+		t.Fatalf("session %q was never closed", want)
+	}
+}
+
+func assertNoClose(t *testing.T, f *fakeACP) {
+	t.Helper()
+	select {
+	case got := <-f.closed:
+		t.Fatalf("unexpected session/close for %q", got)
+	case <-time.After(50 * time.Millisecond):
+	}
+}
+
+// /new must close the dropped session: claude-agent-acp keeps a Claude Code
+// subprocess per open session, so an unclosed one leaks until weclaw restarts.
+func TestACPResetClosesIdleSession(t *testing.T) {
+	f := newFakeACP()
+	ctx := context.Background()
+
+	if _, err := f.a.Chat(ctx, "wx-user", "hi"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.a.ResetSession(ctx, "wx-user"); err != nil {
+		t.Fatal(err)
+	}
+	waitClosed(t, f, "s1")
+	assertNoClose(t, f) // the new session s2 stays open
+}
+
+// /new while a reply is being generated must not cut that reply off: the old
+// session is closed only after its prompt finishes.
+func TestACPResetDefersCloseUntilPromptDone(t *testing.T) {
+	f := newFakeACP()
+	inPrompt := make(chan struct{})
+	release := make(chan struct{})
+	f.promptGate = func() {
+		select {
+		case inPrompt <- struct{}{}:
+			<-release
+		default:
+		}
+	}
+	ctx := context.Background()
+
+	reply := make(chan string, 1)
+	go func() {
+		r, err := f.a.Chat(ctx, "wx-user", "long")
+		if err != nil {
+			t.Errorf("chat: %v", err)
+		}
+		reply <- r
+	}()
+	<-inPrompt
+
+	if _, err := f.a.ResetSession(ctx, "wx-user"); err != nil {
+		t.Fatal(err)
+	}
+	assertNoClose(t, f)
+
+	close(release)
+	if r := <-reply; r != "reply:long" {
+		t.Fatalf("in-flight reply = %q, want reply:long", r)
+	}
+	waitClosed(t, f, "s1")
+}
+
+// Agents that do not advertise sessionCapabilities.close are never sent it.
+func TestACPResetSkipsCloseWithoutCapability(t *testing.T) {
+	f := newFakeACP()
+	f.a.canCloseSession = false
+	ctx := context.Background()
+
+	if _, err := f.a.Chat(ctx, "wx-user", "hi"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.a.ResetSession(ctx, "wx-user"); err != nil {
+		t.Fatal(err)
+	}
+	assertNoClose(t, f)
 }

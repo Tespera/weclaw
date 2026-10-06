@@ -39,6 +39,13 @@ type ACPAgent struct {
 	sessions map[string]string // conversationID -> sessionID (legacy ACP)
 	threads  map[string]string // conversationID -> threadID (codex app-server)
 
+	// claude-agent-acp keeps one Claude Code subprocess alive per open session
+	// until the client sends session/close. A session dropped by /new or /cwd is
+	// retired and closed as soon as no prompt is using it.
+	canCloseSession bool            // agent advertised sessionCapabilities.close
+	sessionUsers    map[string]int  // sessionID -> prompts currently using it
+	retiredSessions map[string]bool // dropped sessions waiting for their last prompt
+
 	// convLock serializes session/thread lookup, creation and reset per
 	// conversation, so concurrent messages share one session and a /new is not
 	// overwritten by a creation that was already in flight.
@@ -114,6 +121,19 @@ type clientCapabilities struct {
 type fsCapabilities struct {
 	ReadTextFile  bool `json:"readTextFile"`
 	WriteTextFile bool `json:"writeTextFile"`
+}
+
+// initializeResult is the subset of the ACP initialize response weclaw needs.
+type initializeResult struct {
+	AgentCapabilities struct {
+		SessionCapabilities struct {
+			Close json.RawMessage `json:"close,omitempty"`
+		} `json:"sessionCapabilities"`
+	} `json:"agentCapabilities"`
+}
+
+type closeSessionParams struct {
+	SessionID string `json:"sessionId"`
 }
 
 type newSessionParams struct {
@@ -230,20 +250,22 @@ func NewACPAgent(cfg ACPAgentConfig) *ACPAgent {
 	}
 	protocol := detectACPProtocol(cfg.Command, cfg.Args)
 	return &ACPAgent{
-		command:        cfg.Command,
-		args:           cfg.Args,
-		model:          cfg.Model,
-		mode:           cfg.Mode,
-		systemPrompt:   cfg.SystemPrompt,
-		sessionContext: cfg.SessionContext,
-		cwd:            cfg.Cwd,
-		env:            cfg.Env,
-		protocol:       protocol,
-		sessions:       make(map[string]string),
-		threads:        make(map[string]string),
-		pending:        make(map[int64]chan *rpcResponse),
-		notifyCh:       make(map[string]chan *sessionUpdate),
-		turnCh:         make(map[string]chan *codexTurnEvent),
+		command:         cfg.Command,
+		args:            cfg.Args,
+		model:           cfg.Model,
+		mode:            cfg.Mode,
+		systemPrompt:    cfg.SystemPrompt,
+		sessionContext:  cfg.SessionContext,
+		cwd:             cfg.Cwd,
+		env:             cfg.Env,
+		protocol:        protocol,
+		sessions:        make(map[string]string),
+		threads:         make(map[string]string),
+		sessionUsers:    make(map[string]int),
+		retiredSessions: make(map[string]bool),
+		pending:         make(map[int64]chan *rpcResponse),
+		notifyCh:        make(map[string]chan *sessionUpdate),
+		turnCh:          make(map[string]chan *codexTurnEvent),
 	}
 }
 
@@ -342,10 +364,24 @@ func (a *ACPAgent) Start(ctx context.Context) error {
 	}
 
 	log.Printf("[acp] initialized (pid=%d): %s", pid, string(result))
+	if a.protocol == protocolLegacyACP {
+		var init initializeResult
+		if err := json.Unmarshal(result, &init); err == nil {
+			a.mu.Lock()
+			a.canCloseSession = len(init.AgentCapabilities.SessionCapabilities.Close) > 0
+			a.mu.Unlock()
+		}
+	}
 	return nil
 }
 
-// Stop terminates the subprocess.
+// stopGracePeriod is how long Stop waits after closing stdin for the agent to
+// exit on its own before killing it.
+var stopGracePeriod = 5 * time.Second
+
+// Stop terminates the subprocess. Closing stdin first lets the agent shut down
+// cleanly (claude-agent-acp tears down every session, ending their Claude Code
+// subprocesses); it is killed only if it has not exited within stopGracePeriod.
 func (a *ACPAgent) Stop() {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -354,8 +390,18 @@ func (a *ACPAgent) Stop() {
 		return
 	}
 	a.stdin.Close()
-	a.cmd.Process.Kill()
-	a.cmd.Wait()
+	exited := make(chan struct{})
+	go func() {
+		a.cmd.Wait()
+		close(exited)
+	}()
+	select {
+	case <-exited:
+	case <-time.After(stopGracePeriod):
+		log.Printf("[acp] agent did not exit within %s after stdin closed, killing (pid=%d)", stopGracePeriod, a.cmd.Process.Pid)
+		a.cmd.Process.Kill()
+		<-exited
+	}
 	a.started = false
 }
 
@@ -389,15 +435,69 @@ func (a *ACPAgent) ResetSession(ctx context.Context, conversationID string) (str
 	}
 
 	a.mu.Lock()
+	oldSessionID, hadSession := a.sessions[conversationID]
 	delete(a.sessions, conversationID)
 	a.mu.Unlock()
 	log.Printf("[acp] session reset (conversation=%s), creating new session", conversationID)
+	if hadSession {
+		a.retireSession(oldSessionID)
+	}
 
 	sessionID, _, err := a.getOrCreateSessionLocked(ctx, conversationID)
 	if err != nil {
 		return "", fmt.Errorf("create new session: %w", err)
 	}
 	return sessionID, nil
+}
+
+// retireSession closes a session no conversation maps to any more. If a prompt
+// is still using it (e.g. /new sent while a reply is being generated), the
+// close is deferred until that prompt finishes so its reply is not cut off.
+func (a *ACPAgent) retireSession(sessionID string) {
+	a.mu.Lock()
+	if !a.canCloseSession {
+		a.mu.Unlock()
+		return
+	}
+	idle := a.sessionUsers[sessionID] == 0
+	if !idle {
+		a.retiredSessions[sessionID] = true
+	}
+	a.mu.Unlock()
+
+	if idle {
+		go a.closeSession(sessionID)
+	}
+}
+
+// releaseSession drops one prompt's hold on sessionID, closing the session if
+// it was retired while in use.
+func (a *ACPAgent) releaseSession(sessionID string) {
+	a.mu.Lock()
+	a.sessionUsers[sessionID]--
+	closeNow := false
+	if a.sessionUsers[sessionID] <= 0 {
+		delete(a.sessionUsers, sessionID)
+		closeNow = a.retiredSessions[sessionID]
+		delete(a.retiredSessions, sessionID)
+	}
+	a.mu.Unlock()
+
+	if closeNow {
+		go a.closeSession(sessionID)
+	}
+}
+
+// closeSession asks the agent to close sessionID, which for claude-agent-acp
+// ends the session's Claude Code subprocess. The transcript stays on disk.
+func (a *ACPAgent) closeSession(sessionID string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if _, err := a.rpc(ctx, "session/close", closeSessionParams{SessionID: sessionID}); err != nil {
+		log.Printf("[acp] failed to close session %s: %v", sessionID, err)
+		return
+	}
+	log.Printf("[acp] closed session (session=%s)", sessionID)
 }
 
 // Chat sends a message and returns the full response.
@@ -422,10 +522,11 @@ func (a *ACPAgent) chat(ctx context.Context, conversationID string, message stri
 		return a.chatCodexAppServer(ctx, conversationID, message)
 	}
 
-	sessionID, isNew, err := a.getOrCreateSession(ctx, conversationID)
+	sessionID, isNew, err := a.acquireSession(ctx, conversationID)
 	if err != nil {
 		return "", fmt.Errorf("session error: %w", err)
 	}
+	defer a.releaseSession(sessionID)
 
 	pid := a.pid()
 	if isNew {
@@ -546,13 +647,24 @@ func (a *ACPAgent) pid() int {
 	return 0
 }
 
-func (a *ACPAgent) getOrCreateSession(ctx context.Context, conversationID string) (string, bool, error) {
+// acquireSession returns the conversation's session, creating it if needed, and
+// marks it in use until the caller calls releaseSession. Taking the hold under
+// convLock means a concurrent /new either sees it (and defers the close) or
+// runs first (and this prompt gets the new session).
+func (a *ACPAgent) acquireSession(ctx context.Context, conversationID string) (string, bool, error) {
 	unlock, _, err := a.convLock.lock(ctx, conversationID)
 	if err != nil {
 		return "", false, err
 	}
 	defer unlock()
-	return a.getOrCreateSessionLocked(ctx, conversationID)
+	sessionID, isNew, err := a.getOrCreateSessionLocked(ctx, conversationID)
+	if err != nil {
+		return "", false, err
+	}
+	a.mu.Lock()
+	a.sessionUsers[sessionID]++
+	a.mu.Unlock()
+	return sessionID, isNew, nil
 }
 
 // getOrCreateSessionLocked requires convLock held for conversationID.
