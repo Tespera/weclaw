@@ -145,3 +145,20 @@ func TestACPSessionLifecycleE2E(t *testing.T) {
 		time.Sleep(200 * time.Millisecond)
 	}
 }
+
+func TestStderrKeepsOnlyErrorLines(t *testing.T) {
+	w := &acpStderrWriter{prefix: "[test]"}
+	w.Write([]byte("Error: connect ECONNREFUSED\n[session/create] sessionId=x phase=register durationMs=1\n"))
+	if got := w.LastError(); got != "Error: connect ECONNREFUSED" {
+		t.Errorf("got %q", got)
+	}
+}
+
+func TestDescribeRPCErrorKeepsAgentMessage(t *testing.T) {
+	a := &ACPAgent{stderr: &acpStderrWriter{prefix: "[test]"}}
+	a.stderr.Write([]byte("[session/create] sessionId=x phase=register\n"))
+	got := a.describeRPCError(&rpcError{Message: "Internal error: API Error: Connection dropped (ECONNRESET)"})
+	if got != "Internal error: API Error: Connection dropped (ECONNRESET)" {
+		t.Errorf("got %q", got)
+	}
+}

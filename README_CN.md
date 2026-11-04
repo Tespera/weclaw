@@ -21,7 +21,7 @@
 | 上一条还没回完就发下一条，前一条被打断或报 `agent returned empty response` | [#48](https://github.com/fastclaw-ai/weclaw/issues/48) | 同一会话的消息排队依次处理，每条各自回复（v0.9.5，ACP 模式） |
 | Codex 下 `/new` 报 `unknown variant session/new` | [#60](https://github.com/fastclaw-ai/weclaw/issues/60) | 已修复（v0.9.0） |
 | 不能把本机的图片、文件发回微信 | [#57](https://github.com/fastclaw-ai/weclaw/issues/57)、[#34](https://github.com/fastclaw-ai/weclaw/issues/34) | `weclaw send --media <本地路径>`，任意文件类型；Agent 会被告知用它发文件（v0.9.3、v0.9.4） |
-| 微信发图片给 Agent 没反应 | [#26](https://github.com/fastclaw-ai/weclaw/issues/26) | 图片下载后转给支持图片的 ACP Agent（v0.9.0） |
+| 微信发图片、文件给 Agent 没反应 | [#26](https://github.com/fastclaw-ai/weclaw/issues/26) | 图片、文件、视频保存到本机，随下一条消息把路径交给 Agent（v0.9.9） |
 | 切换默认 Agent 会覆盖磁盘上的新配置 | [#38](https://github.com/fastclaw-ai/weclaw/issues/38) | 只改 `default_agent` 字段（v0.9.0） |
 
 另外还有：
@@ -140,6 +140,10 @@ weclaw service install
 WeClaw 支持收发图片、视频、文件和语音消息。
 
 **语音消息：** 在微信中发送语音消息时，WeClaw 会自动使用微信的语音转文字功能，将转写后的文本发送给 AI Agent。重复的语音消息事件会自动去重。
+
+**收到的图片、文件、视频：** 保存到 `~/.weclaw/workspace/inbox/<日期>/`，先回一句"已收到"，再随用户下一条消息把本地路径一起交给 Agent（微信里通常先发文件、再说要做什么）。单个文件上限 200 MB。
+
+**报错：** Agent 出错时回复中文说明（发生了什么、是不是你这边的问题、下一步怎么做），如额度用完会给出恢复时间；原始报错只写日志。
 
 **Agent 回复自动处理：** 当 AI Agent 返回包含图片的 markdown（`![](url)`）时，WeClaw 会自动提取图片 URL，下载文件，上传到微信 CDN（AES-128-ECB 加密），然后作为图片消息发送。
 
@@ -305,7 +309,7 @@ ACP Agent 的 `model` 和 `mode` 会在每个新会话上通过 ACP 标准方法
 
 会话的工作区决定加载哪些项目上下文：项目 CLAUDE.md、`.mcp.json`、项目级 skills，以及按目录区分的 Claude 自动记忆。想和终端里从某目录启动的 Claude 一致，就把 `cwd` 设成那个目录。claude.ai 账号里的连接器（MCP）在 SDK 模式下默认关闭，需要时在 `env` 里加 `"ENABLE_CLAUDEAI_MCP_SERVERS": "true"`。
 
-每个新会话还会自动追加一段微信会话说明（当前用户的微信 ID、如何用 `weclaw send --media <本地路径>` 发文件），再加上配置里的 `system_prompt`。二者通过 `session/new` 的 `_meta.systemPrompt.append` 追加到 Agent 自带的系统提示之后，不会替换它。
+每个新会话还会自动追加一段微信会话说明（当前用户的微信 ID、如何用 `weclaw send --media <本地路径>` 发文件、收到的附件存在哪里），再加上配置里的 `system_prompt`。二者通过 `session/new` 的 `_meta.systemPrompt.append` 追加到 Agent 自带的系统提示之后，不会替换它。
 
 `mode` 可选值由 Agent 决定（claude-agent-acp：`default`、`acceptEdits`、`plan`、`bypassPermissions` 等）。未设置 `mode` 时，ACP 模式仍会自动批准所有权限请求。修改配置后执行 `weclaw restart`。
 

@@ -77,7 +77,7 @@ func TestHandleCwdRejectsMissingDir(t *testing.T) {
 	claude := &recordingAgent{cwd: "/old"}
 	h.SetDefaultAgent("claude", claude)
 	reply := h.handleCwd(context.Background(), "u", "/cwd /definitely/not/here")
-	if !strings.Contains(reply, "Path not found") || claude.cwd != "/old" || len(claude.resets) != 0 {
+	if !strings.Contains(reply, "找不到这个目录") || claude.cwd != "/old" || len(claude.resets) != 0 {
 		t.Errorf("reply=%q cwd=%q resets=%v; want rejection with no changes", reply, claude.cwd, claude.resets)
 	}
 }

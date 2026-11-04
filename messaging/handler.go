@@ -47,6 +47,9 @@ type Handler struct {
 	saveDir       string   // directory to save images/files to
 	seenMsgs      sync.Map // map[int64]time.Time — dedup by message_id
 
+	inboundMu sync.Mutex
+	inbound   map[string]*pendingInbound // userID -> files waiting for the next message
+
 	inflight      sync.WaitGroup // messages being handled
 	interruptedMu sync.Mutex
 	interrupted   []InterruptedReply // replies cut off by shutdown
@@ -328,13 +331,21 @@ func (h *Handler) HandleMessage(ctx context.Context, client *ilink.Client, msg i
 			log.Printf("[handler] voice transcription from %s: %q", msg.FromUserID, truncate(text, 80))
 		}
 	}
+	if hasInboundMedia(msg) {
+		// Saved now, delivered to the agent with the user's next message.
+		h.handleInboundMedia(ctx, client, msg)
+	}
 	if text == "" {
-		// Check for image message — forward to agent for processing
-		if img := extractImage(msg); img != nil {
-			h.handleImageMessage(ctx, client, msg, img)
+		if hasInboundMedia(msg) {
 			return
 		}
-		log.Printf("[handler] received non-text message from %s, skipping", msg.FromUserID)
+		log.Printf("[handler] received unsupported message from %s: %s", msg.FromUserID, describeItems(msg))
+		if reply := unsupportedMessageText(msg); reply != "" {
+			h.contextTokens.Store(msg.FromUserID, msg.ContextToken)
+			if err := SendTextReply(ctx, client, msg.FromUserID, reply, msg.ContextToken, NewClientID()); err != nil {
+				log.Printf("[handler] failed to send reply to %s: %v", msg.FromUserID, err)
+			}
+		}
 		return
 	}
 
@@ -356,7 +367,7 @@ func (h *Handler) HandleMessage(ctx context.Context, client *ilink.Client, msg i
 			var reply string
 			if err != nil {
 				log.Printf("[handler] link save failed: %v", err)
-				reply = fmt.Sprintf("保存失败: %v", err)
+				reply = "链接保存失败：" + truncateRunes(err.Error(), 120)
 			} else {
 				reply = fmt.Sprintf("已保存: %s", title)
 			}
@@ -394,7 +405,7 @@ func (h *Handler) HandleMessage(ctx context.Context, client *ilink.Client, msg i
 				log.Printf("[handler] failed to send typing state: %v", typingErr)
 			}
 		}()
-		name, reply := h.chatInNewSession(ctx, msg.FromUserID, message)
+		name, reply := h.chatInNewSession(ctx, msg.FromUserID, h.takePendingInbound(msg.FromUserID, message))
 		h.sendReplyWithMedia(ctx, client, msg, name, reply, clientID)
 		return
 	} else if strings.HasPrefix(trimmed, "/cwd") {
@@ -425,7 +436,7 @@ func (h *Handler) HandleMessage(ctx context.Context, client *ilink.Client, msg i
 			// Unknown agent -> forward to default
 			h.sendToDefaultAgent(ctx, client, msg, text, clientID)
 		} else {
-			reply := "Usage: specify one agent to switch, or add a message to broadcast"
+			reply := "一次只能切换到一个 Agent。要同时问多个，请在后面加上消息，例如：@cc @cx 你好"
 			if err := SendTextReply(ctx, client, msg.FromUserID, reply, msg.ContextToken, clientID); err != nil {
 				log.Printf("[handler] failed to send reply to %s: %v", msg.FromUserID, err)
 			}
@@ -478,13 +489,13 @@ func (h *Handler) sendToDefaultAgent(ctx context.Context, client *ilink.Client, 
 	var reply string
 	if ag != nil {
 		var err error
-		reply, err = h.chatWithAgent(ctx, ag, msg.FromUserID, text)
+		reply, err = h.chatWithAgent(ctx, ag, msg.FromUserID, h.takePendingInbound(msg.FromUserID, text))
 		if err != nil {
-			reply = fmt.Sprintf("Error: %v", err)
+			reply = friendlyError(defaultName, err)
 		}
 	} else {
-		log.Printf("[handler] agent not ready, using echo mode for %s", msg.FromUserID)
-		reply = "[echo] " + text
+		log.Printf("[handler] no default agent running, cannot answer %s", msg.FromUserID)
+		reply = noAgentText(defaultName)
 	}
 
 	h.sendReplyWithMedia(ctx, client, msg, defaultName, reply, clientID)
@@ -495,14 +506,14 @@ func (h *Handler) sendToNamedAgent(ctx context.Context, client *ilink.Client, ms
 	ag, agErr := h.getAgent(ctx, name)
 	if agErr != nil {
 		log.Printf("[handler] agent %q not available: %v", name, agErr)
-		reply := fmt.Sprintf("Agent %q is not available: %v", name, agErr)
+		reply := friendlyError(name, agErr)
 		SendTextReply(ctx, client, msg.FromUserID, reply, msg.ContextToken, clientID)
 		return
 	}
 
-	reply, err := h.chatWithAgent(ctx, ag, msg.FromUserID, message)
+	reply, err := h.chatWithAgent(ctx, ag, msg.FromUserID, h.takePendingInbound(msg.FromUserID, message))
 	if err != nil {
-		reply = fmt.Sprintf("Error: %v", err)
+		reply = friendlyError(name, err)
 	}
 	h.sendReplyWithMedia(ctx, client, msg, name, reply, clientID)
 }
@@ -516,17 +527,18 @@ func (h *Handler) broadcastToAgents(ctx context.Context, client *ilink.Client, m
 	}
 
 	ch := make(chan result, len(names))
+	message = h.takePendingInbound(msg.FromUserID, message)
 
 	for _, name := range names {
 		go func(n string) {
 			ag, err := h.getAgent(ctx, n)
 			if err != nil {
-				ch <- result{name: n, reply: fmt.Sprintf("Error: %v", err)}
+				ch <- result{name: n, reply: friendlyError(n, err)}
 				return
 			}
 			reply, err := h.chatWithAgent(ctx, ag, msg.FromUserID, message)
 			if err != nil {
-				ch <- result{name: n, reply: fmt.Sprintf("Error: %v", err)}
+				ch <- result{name: n, reply: friendlyError(n, err)}
 				return
 			}
 			ch <- result{name: n, reply: reply}
@@ -623,7 +635,7 @@ func (h *Handler) switchDefault(ctx context.Context, name string) string {
 	ag, err := h.getAgent(ctx, name)
 	if err != nil {
 		log.Printf("[handler] failed to switch default to %q: %v", name, err)
-		return fmt.Sprintf("Failed to switch to %q: %v", name, err)
+		return "切换失败：" + friendlyError(name, err)
 	}
 
 	h.mu.Lock()
@@ -653,12 +665,12 @@ func (h *Handler) resetDefaultSession(ctx context.Context, userID string) string
 	h.mu.RUnlock()
 	ag := h.getDefaultAgent()
 	if ag == nil {
-		return "No agent running."
+		return noAgentText(name)
 	}
 	sessionID, err := ag.ResetSession(ctx, userID)
 	if err != nil {
 		log.Printf("[handler] reset session failed for %s: %v", userID, err)
-		return fmt.Sprintf("Failed to reset session: %v", err)
+		return "新建会话失败：" + friendlyError(name, err)
 	}
 	reply := fmt.Sprintf("已创建新的 %s 会话", name)
 	if cwd := ag.Info().Cwd; cwd != "" {
@@ -697,15 +709,15 @@ func (h *Handler) chatInNewSession(ctx context.Context, userID, message string) 
 	h.mu.RUnlock()
 	ag := h.getDefaultAgent()
 	if ag == nil {
-		return name, "No agent running."
+		return name, noAgentText(name)
 	}
 	if _, err := ag.ResetSession(ctx, userID); err != nil {
 		log.Printf("[handler] reset session failed for %s: %v", userID, err)
-		return name, fmt.Sprintf("Failed to reset session: %v", err)
+		return name, "新建会话失败：" + friendlyError(name, err)
 	}
 	reply, err := h.chatWithAgent(ctx, ag, userID, message)
 	if err != nil {
-		return name, fmt.Sprintf("Error: %v", err)
+		return name, friendlyError(name, err)
 	}
 	return name, reply
 }
@@ -735,7 +747,7 @@ func (h *Handler) handleCwd(ctx context.Context, userID, trimmed string) string 
 		h.mu.RUnlock()
 		ag := h.getDefaultAgent()
 		if ag == nil {
-			return "No agent running."
+			return noAgentText(name)
 		}
 		return fmt.Sprintf("工作区: %s\nagent: %s", displayPath(ag.Info().Cwd), name)
 	}
@@ -756,16 +768,16 @@ func (h *Handler) handleCwd(ctx context.Context, userID, trimmed string) string 
 	// Resolve to absolute path
 	absPath, err := filepath.Abs(arg)
 	if err != nil {
-		return fmt.Sprintf("Invalid path: %v", err)
+		return fmt.Sprintf("路径无效：%s", arg)
 	}
 
 	// Verify directory exists
 	info, err := os.Stat(absPath)
 	if err != nil {
-		return fmt.Sprintf("Path not found: %s", absPath)
+		return fmt.Sprintf("找不到这个目录：%s", displayPath(absPath))
 	}
 	if !info.IsDir() {
-		return fmt.Sprintf("Not a directory: %s", absPath)
+		return fmt.Sprintf("这不是目录：%s", displayPath(absPath))
 	}
 
 	// Update cwd on all running agents
@@ -827,6 +839,26 @@ func (h *Handler) handleCwd(ctx context.Context, userID, trimmed string) string 
 	return reply
 }
 
+// noAgentText is the reply when the default agent is not running (it failed
+// to start, or none is configured).
+func noAgentText(name string) string {
+	if name == "" {
+		return "还没有配置可用的 AI Agent，请在电脑上检查 ~/.weclaw/config.json。"
+	}
+	return fmt.Sprintf("%s 还没启动成功，暂时无法回复。请在电脑上运行 weclaw restart 后再发。", agentDisplayName(name))
+}
+
+func describeItems(msg ilink.WeixinMessage) string {
+	var parts []string
+	for _, item := range msg.ItemList {
+		parts = append(parts, describeItem(item))
+	}
+	if len(parts) == 0 {
+		return "no items"
+	}
+	return strings.Join(parts, ", ")
+}
+
 // buildStatus returns a short status string showing the current default agent.
 func (h *Handler) buildStatus() string {
 	h.mu.RLock()
@@ -872,15 +904,6 @@ func extractText(msg ilink.WeixinMessage) string {
 	return ""
 }
 
-func extractImage(msg ilink.WeixinMessage) *ilink.ImageItem {
-	for _, item := range msg.ItemList {
-		if item.Type == ilink.ItemTypeImage && item.ImageItem != nil {
-			return item.ImageItem
-		}
-	}
-	return nil
-}
-
 func extractVoiceText(msg ilink.WeixinMessage) string {
 	for _, item := range msg.ItemList {
 		if item.Type == ilink.ItemTypeVoice && item.VoiceItem != nil && item.VoiceItem.Text != "" {
@@ -888,93 +911,6 @@ func extractVoiceText(msg ilink.WeixinMessage) string {
 		}
 	}
 	return ""
-}
-
-// handleImageMessage downloads an image and forwards it to the agent for processing.
-func (h *Handler) handleImageMessage(ctx context.Context, client *ilink.Client, msg ilink.WeixinMessage, img *ilink.ImageItem) {
-	clientID := NewClientID()
-	log.Printf("[handler] received image from %s, downloading...", msg.FromUserID)
-
-	// Download image data via CDN
-	if img.Media == nil || img.Media.EncryptQueryParam == "" {
-		log.Printf("[handler] image has no CDN media info from %s", msg.FromUserID)
-		return
-	}
-	// AES key: prefer img.AESKey (hex) over media.AESKey (base64)
-	aesKeyBase64 := img.Media.AESKey
-	if img.AESKey != "" {
-		aesKeyBase64 = HexKeyToBase64(img.AESKey)
-	}
-	data, err := DownloadFileFromCDN(ctx, img.Media.EncryptQueryParam, aesKeyBase64)
-	if err != nil {
-		log.Printf("[handler] failed to download image from %s: %v", msg.FromUserID, err)
-		return
-	}
-
-	// Detect mime type
-	mimeType := detectImageMime(data)
-	log.Printf("[handler] downloaded image from %s (%d bytes, %s)", msg.FromUserID, len(data), mimeType)
-
-	// Also save to disk if save_dir is configured
-	if h.saveDir != "" {
-		go h.handleImageSave(ctx, client, msg, img)
-	}
-
-	// Store context token
-	h.contextTokens.Store(msg.FromUserID, msg.ContextToken)
-
-	// Send typing indicator
-	go func() {
-		if typingErr := SendTypingState(ctx, client, msg.FromUserID, msg.ContextToken); typingErr != nil {
-			log.Printf("[handler] failed to send typing state: %v", typingErr)
-		}
-	}()
-
-	// Try to send image to agent
-	h.mu.RLock()
-	defaultName := h.defaultName
-	h.mu.RUnlock()
-	ag := h.getDefaultAgent()
-	if ag == nil {
-		log.Printf("[handler] no agent ready, skipping image from %s", msg.FromUserID)
-		return
-	}
-
-	var reply string
-	if imgAgent, ok := ag.(agent.ImageChatAgent); ok {
-		log.Printf("[handler] sending image to agent via ChatWithImage for %s", msg.FromUserID)
-		reply, err = imgAgent.ChatWithImage(ctx, msg.FromUserID, "请描述这张图片", &agent.ImageInput{
-			MimeType: mimeType,
-			Data:     data,
-		})
-	} else {
-		reply, err = h.chatWithAgent(ctx, ag, msg.FromUserID, "[用户发送了一张图片，但当前 agent 不支持图片处理]")
-	}
-
-	if err != nil {
-		reply = fmt.Sprintf("Error: %v", err)
-	}
-
-	h.sendReplyWithMedia(ctx, client, msg, defaultName, reply, clientID)
-}
-
-func detectImageMime(data []byte) string {
-	if len(data) < 4 {
-		return "image/jpeg"
-	}
-	if data[0] == 0x89 && data[1] == 0x50 && data[2] == 0x4E && data[3] == 0x47 {
-		return "image/png"
-	}
-	if data[0] == 0xFF && data[1] == 0xD8 && data[2] == 0xFF {
-		return "image/jpeg"
-	}
-	if data[0] == 0x47 && data[1] == 0x49 && data[2] == 0x46 {
-		return "image/gif"
-	}
-	if len(data) >= 12 && data[0] == 0x52 && data[1] == 0x49 && data[8] == 0x57 && data[9] == 0x45 {
-		return "image/webp"
-	}
-	return "image/jpeg"
 }
 
 func (h *Handler) handleImageSave(ctx context.Context, client *ilink.Client, msg ilink.WeixinMessage, img *ilink.ImageItem) {
@@ -993,7 +929,7 @@ func (h *Handler) handleImageSave(ctx context.Context, client *ilink.Client, msg
 	data, err := DownloadFileFromCDN(ctx, img.Media.EncryptQueryParam, aesKeyBase64)
 	if err != nil {
 		log.Printf("[handler] failed to download image from %s: %v", msg.FromUserID, err)
-		reply := fmt.Sprintf("Failed to save image: %v", err)
+		reply := "图片存档失败：" + truncateRunes(err.Error(), 120)
 		_ = SendTextReply(ctx, client, msg.FromUserID, reply, msg.ContextToken, clientID)
 		return
 	}
@@ -1015,7 +951,7 @@ func (h *Handler) handleImageSave(ctx context.Context, client *ilink.Client, msg
 	// Write image file
 	if err := os.WriteFile(filePath, data, 0o644); err != nil {
 		log.Printf("[handler] failed to write image: %v", err)
-		reply := fmt.Sprintf("Failed to save image: %v", err)
+		reply := "图片存档失败：" + truncateRunes(err.Error(), 120)
 		_ = SendTextReply(ctx, client, msg.FromUserID, reply, msg.ContextToken, clientID)
 		return
 	}
@@ -1028,7 +964,7 @@ func (h *Handler) handleImageSave(ctx context.Context, client *ilink.Client, msg
 	}
 
 	log.Printf("[handler] saved image to %s (%d bytes)", filePath, len(data))
-	reply := fmt.Sprintf("Saved: %s", fileName)
+	reply := fmt.Sprintf("图片已存档：%s", fileName)
 	if err := SendTextReply(ctx, client, msg.FromUserID, reply, msg.ContextToken, clientID); err != nil {
 		log.Printf("[handler] failed to send reply to %s: %v", msg.FromUserID, err)
 	}

@@ -21,7 +21,7 @@ Open upstream issues that are resolved here:
 | Sending a message before the previous reply arrives interrupts it or fails with `agent returned empty response` | [#48](https://github.com/fastclaw-ai/weclaw/issues/48) | Messages to the same session are queued and each gets its own reply (v0.9.5, ACP mode) |
 | `/new` with Codex fails with `unknown variant session/new` | [#60](https://github.com/fastclaw-ai/weclaw/issues/60) | Fixed (v0.9.0) |
 | Cannot send local images or files back to WeChat | [#57](https://github.com/fastclaw-ai/weclaw/issues/57), [#34](https://github.com/fastclaw-ai/weclaw/issues/34) | `weclaw send --media <local path>` for any file type; the agent is told to use it (v0.9.3, v0.9.4) |
-| Images sent from WeChat are ignored by the agent | [#26](https://github.com/fastclaw-ai/weclaw/issues/26) | Images are downloaded and forwarded to ACP agents that accept images (v0.9.0) |
+| Images and files sent from WeChat are ignored by the agent | [#26](https://github.com/fastclaw-ai/weclaw/issues/26) | Images, files and videos are saved locally and their paths handed to the agent with the next message (v0.9.9) |
 | Switching the default agent overwrites newer config on disk | [#38](https://github.com/fastclaw-ai/weclaw/issues/38) | Only the `default_agent` field is written (v0.9.0) |
 
 Also:
@@ -140,6 +140,10 @@ Switching the default agent is saved to the config file and survives restarts.
 WeClaw sends and receives images, video, files and voice messages.
 
 **Voice:** WeChat's own speech-to-text transcription is forwarded to the agent as text. Duplicate voice events are de-duplicated.
+
+**Images, files and videos you send:** saved to `~/.weclaw/workspace/inbox/<date>/`, acknowledged right away, and handed to the agent as local paths together with your next message (on WeChat you usually send the file first and say what to do second). Up to 200 MB per file.
+
+**Errors:** agent failures are replied in plain Chinese — what happened, whether it is on your side, and what to do next (e.g. when a usage limit resets). The raw error goes to the log only.
 
 **Images in agent replies:** when the agent returns markdown images (`![](url)`), WeClaw downloads them, uploads to the WeChat CDN (AES-128-ECB encrypted) and sends them as image messages.
 
@@ -301,7 +305,7 @@ For ACP agents, `model` and `mode` are applied to each new session via the stand
 
 The session workspace decides which project context loads: the project CLAUDE.md, `.mcp.json`, project skills and Claude's per-directory auto memory. To match a Claude started from some directory in your terminal, set `cwd` to that directory. Connectors (MCP) from your claude.ai account are off in SDK mode by default; add `"ENABLE_CLAUDEAI_MCP_SERVERS": "true"` to `env` to enable them.
 
-Each new session also gets a short WeChat context (the current user's WeChat ID and how to send files with `weclaw send --media <local path>`), followed by the configured `system_prompt`. Both are appended after the agent's built-in system prompt via `_meta.systemPrompt.append` on `session/new`; they do not replace it.
+Each new session also gets a short WeChat context (the current user's WeChat ID and how to send files with `weclaw send --media <local path>`, and where received attachments are saved), followed by the configured `system_prompt`. Both are appended after the agent's built-in system prompt via `_meta.systemPrompt.append` on `session/new`; they do not replace it.
 
 Valid `mode` values depend on the agent (claude-agent-acp: `default`, `acceptEdits`, `plan`, `bypassPermissions`, …). Without `mode`, ACP mode still auto-approves every permission request. Run `weclaw restart` after changing the config.
 

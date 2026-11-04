@@ -103,8 +103,9 @@ type rpcResponse struct {
 }
 
 type rpcError struct {
-	Code    int    `json:"code"`
-	Message string `json:"message"`
+	Code    int             `json:"code"`
+	Message string          `json:"message"`
+	Data    json.RawMessage `json:"data,omitempty"`
 }
 
 // --- ACP protocol types ---
@@ -968,17 +969,27 @@ func (a *ACPAgent) call(ctx context.Context, method string, params interface{}) 
 		return nil, ctx.Err()
 	case resp := <-ch:
 		if resp.Error != nil {
-			msg := resp.Error.Message
-			// Enrich with stderr context if available
-			if a.stderr != nil {
-				if detail := a.stderr.LastError(); detail != "" {
-					msg = detail
-				}
-			}
-			return nil, fmt.Errorf("agent error: %s", msg)
+			return nil, fmt.Errorf("agent error: %s", a.describeRPCError(resp.Error))
 		}
 		return resp.Result, nil
 	}
+}
+
+// describeRPCError keeps the agent's own error message as the reason and adds
+// its data payload and the latest stderr error line as extra context. The
+// stderr line must never replace the message: it can be minutes old and
+// unrelated to this request.
+func (a *ACPAgent) describeRPCError(e *rpcError) string {
+	msg := strings.TrimSpace(e.Message)
+	if data := strings.TrimSpace(string(e.Data)); data != "" && data != "null" && !strings.Contains(msg, data) {
+		msg += " " + data
+	}
+	if a.stderr != nil {
+		if detail := a.stderr.LastError(); detail != "" && !strings.Contains(msg, detail) {
+			msg += " (stderr: " + detail + ")"
+		}
+	}
+	return msg
 }
 
 // readLoop reads NDJSON lines from stdout and dispatches to pending requests or notification channels.
@@ -1381,14 +1392,30 @@ func (w *acpStderrWriter) Write(p []byte) (int, error) {
 	for _, line := range lines {
 		if line != "" {
 			log.Printf("%s %s", w.prefix, line)
-			// Capture lines that look like actual error messages (not traceback frames)
-			if !strings.HasPrefix(line, "  ") && !strings.HasPrefix(line, "Traceback") && !strings.HasPrefix(line, "...") {
+			if isStderrErrorLine(line) {
 				w.last = line
 			}
 		}
 	}
 	w.mu.Unlock()
 	return len(p), nil
+}
+
+// isStderrErrorLine reports whether a stderr line states an error, as opposed
+// to progress or debug output such as "[session/create] ... phase=register"
+// or a traceback frame.
+func isStderrErrorLine(line string) bool {
+	if strings.HasPrefix(line, " ") || strings.HasPrefix(line, "\t") ||
+		strings.HasPrefix(line, "Traceback") || strings.HasPrefix(line, "...") {
+		return false
+	}
+	low := strings.ToLower(line)
+	for _, kw := range []string{"error", "exception", "failed", "fatal", "econn", "etimedout", "limit"} {
+		if strings.Contains(low, kw) {
+			return true
+		}
+	}
+	return false
 }
 
 // LastError returns the last captured error line and resets it.
