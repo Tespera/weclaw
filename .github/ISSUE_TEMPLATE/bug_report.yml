@@ -1,0 +1,48 @@
+name: Bug report / 问题反馈
+description: Something doesn't work as expected. 功能异常、报错。
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report. Please remove tokens, WeChat IDs and API keys from logs before pasting.
+        感谢反馈。粘贴日志前请删掉 token、微信 ID 和 API Key。
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened / 发生了什么
+      description: What you did, what you expected, and what happened instead. 你做了什么、期望什么、实际发生了什么。
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce / 复现步骤
+      placeholder: |
+        1. Send `/cc hello` in WeChat
+        2. ...
+  - type: input
+    id: version
+    attributes:
+      label: WeClaw version / 版本
+      description: Output of `weclaw version`.
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: OS / 操作系统
+      options: [macOS, Linux, Windows, Docker]
+    validations:
+      required: true
+  - type: input
+    id: agent
+    attributes:
+      label: Agent and mode / Agent 与模式
+      placeholder: e.g. Claude Code via ACP (claude-agent-acp 0.x), Codex CLI
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs / 日志
+      description: Relevant lines from `~/.weclaw/weclaw.log`.
+      render: text

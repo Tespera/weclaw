@@ -1,0 +1,97 @@
+/* Shared design tokens for WeClaw README artwork. Rendered by render.py. */
+:root {
+  --ink: #07100c;
+  --ink-2: #0c1712;
+  --surface: #111d17;
+  --surface-2: #162720;
+  --line: rgba(190, 255, 220, 0.09);
+  --line-2: rgba(190, 255, 220, 0.16);
+  --text: #eaf3ee;
+  --muted: #8fa59a;
+  --dim: #5d7268;
+  --green: #07c160;
+  --green-2: #2bd97e;
+  --mint: #95ec69;
+  --claude: #e08a68;
+  --codex: #c9d1d9;
+  --gemini: #8ab4f8;
+  --kimi: #b9a4ff;
+  --cursor: #f2f2f2;
+  --opencode: #f5c76b;
+  --openclaw: #ff7a7a;
+  --sans: -apple-system, "SF Pro Display", "SF Pro Text", "PingFang SC", "Helvetica Neue", sans-serif;
+  --mono: "JetBrains Mono", "JetBrainsMono Nerd Font", "SF Mono", Menlo, monospace;
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html, body { background: transparent; }
+body { font-family: var(--sans); color: var(--text); -webkit-font-smoothing: antialiased; }
+
+.canvas {
+  position: relative;
+  overflow: hidden;
+  border-radius: 28px;
+  background:
+    radial-gradient(900px 520px at 78% 18%, rgba(7, 193, 96, 0.20), transparent 62%),
+    radial-gradient(700px 420px at 8% 110%, rgba(43, 217, 126, 0.10), transparent 60%),
+    linear-gradient(180deg, var(--ink-2), var(--ink));
+  border: 1px solid var(--line);
+}
+/* faint engineering grid */
+.canvas::before {
+  content: "";
+  position: absolute; inset: 0;
+  background-image:
+    linear-gradient(var(--line) 1px, transparent 1px),
+    linear-gradient(90deg, var(--line) 1px, transparent 1px);
+  background-size: 40px 40px;
+  mask-image: radial-gradient(ellipse at 60% 30%, #000 10%, transparent 75%);
+  opacity: 0.55;
+  pointer-events: none;
+}
+.canvas > * { position: relative; }
+
+.eyebrow {
+  font-family: var(--mono);
+  font-size: 13px; letter-spacing: 0.18em; text-transform: uppercase;
+  color: var(--green-2);
+  display: inline-flex; align-items: center; gap: 10px;
+}
+.eyebrow::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--green); box-shadow: 0 0 12px var(--green); }
+
+.wordmark { font-weight: 800; letter-spacing: -0.04em; line-height: 0.95; }
+.wordmark .we { color: var(--text); }
+.wordmark .claw {
+  background: linear-gradient(100deg, var(--green-2), var(--mint));
+  -webkit-background-clip: text; background-clip: text; color: transparent;
+}
+
+.chips { display: flex; flex-wrap: wrap; gap: 8px; }
+.chip {
+  display: inline-flex; align-items: center; gap: 8px;
+  padding: 7px 12px 7px 10px; border-radius: 999px;
+  font-size: 14px; font-weight: 550; color: var(--text); white-space: nowrap;
+  background: rgba(255, 255, 255, 0.04); border: 1px solid var(--line-2);
+}
+.chip i { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
+
+/* phone / chat mock */
+.phone {
+  width: 340px; border-radius: 34px; padding: 10px;
+  background: linear-gradient(160deg, #26332d, #0d1511);
+  box-shadow: 0 40px 80px -20px rgba(0, 0, 0, 0.7), 0 0 0 1px rgba(255,255,255,.07) inset, 0 0 60px -10px rgba(7,193,96,.35);
+}
+.screen { border-radius: 26px; overflow: hidden; background: #ededed; color: #111; }
+.bar { height: 52px; display: flex; align-items: center; justify-content: center; gap: 6px; background: #ededed; border-bottom: 1px solid #dcdcdc; font-size: 15px; font-weight: 600; }
+.bar .ai { font-size: 10px; color: #fff; background: #b8b8b8; border-radius: 3px; padding: 1px 4px; font-weight: 600; }
+.msgs { padding: 14px 12px 16px; display: flex; flex-direction: column; gap: 10px; }
+.msg { max-width: 82%; padding: 9px 12px; border-radius: 6px; font-size: 13.5px; line-height: 1.45; position: relative; }
+.msg.me { align-self: flex-end; background: var(--mint); }
+.msg.bot { align-self: flex-start; background: #fff; }
+.msg code { white-space: nowrap; font-family: var(--mono); font-size: 12px; background: rgba(0,0,0,.06); padding: 0 4px; border-radius: 3px; }
+.file { align-self: flex-start; width: 78%; background: #fff; border-radius: 6px; padding: 10px 12px; display: flex; gap: 10px; align-items: center; }
+.file .ic { width: 34px; height: 40px; border-radius: 4px; background: #fa5151; color: #fff; font-size: 10px; font-weight: 700; display: grid; place-items: center; }
+.file b { font-size: 13px; font-weight: 600; display: block; }
+.file span { font-size: 11px; color: #999; }
+.tag { font-family: var(--mono); font-size: 11px; color: #576b95; }
+.time { align-self: center; font-size: 11px; color: #a5a5a5; }
