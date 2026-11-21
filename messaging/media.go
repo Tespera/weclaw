@@ -119,7 +119,7 @@ func sendMediaData(ctx context.Context, client *ilink.Client, toUserID, fileName
 		return fmt.Errorf("send media message: %w", err)
 	}
 	if resp.Ret != 0 {
-		return fmt.Errorf("send media failed: ret=%d errmsg=%s", resp.Ret, resp.ErrMsg)
+		return &ilink.RetError{Op: "send media", Ret: resp.Ret, ErrMsg: resp.ErrMsg}
 	}
 
 	log.Printf("[media] sent %s to %s from %s", contentType, toUserID, source)

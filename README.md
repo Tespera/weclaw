@@ -236,7 +236,14 @@ Media is sent by type: images (png, jpg, gif, webp, bmp) as images, video (mp4, 
 Set `WECLAW_API_ADDR` to change the listen address (e.g. `0.0.0.0:18011`).
 
 > [!IMPORTANT]
-> WeChat only delivers bot-initiated messages for a limited time after the user last wrote to the bot. In our testing that window is about 24 hours. Outside it, sends fail with `ret=-2 errmsg=prepare failed`. Send the bot any message to reopen the window.
+> WeChat only delivers bot-initiated messages for about 24 hours after the user last wrote to the bot, and only about 10 in a row while the user does not reply. Beyond that, sends fail with `ret=-2 errmsg=prepare failed`; send the bot any message to reopen the window. Both numbers are observed, not documented by Tencent.
+
+What weclaw does about it:
+
+- **Context token**: the bridge stores the context token from each of your messages in `~/.weclaw/state/`, and `weclaw send` and the HTTP API send with it; if WeChat refuses, they try once more without it.
+- **Outbox**: messages WeChat refuses, or that cannot reach the WeChat server (after about 40 seconds of automatic retries), are kept instead of lost. They are resent before your next message to the bot is handled (texts merged into one message), and also once the network is back if the window is still open. Items older than 7 days are dropped. Disable with `--no-queue` (`"no_queue": true` in the API).
+- **Window reminder**: about 4 hours before the window closes, the bot asks you to reply; if that falls in quiet hours (default 23:00–08:00) it is sent at 22:30 the evening before. While a reminder is outstanding, a reply of up to 4 characters only renews the window and is not passed to the agent.
+- **Exit codes**: `weclaw send` exits 0 on success, 3 when WeChat refuses and 4 on network failure (both queued by default; the message says why and how long since your last message), 1 on other errors. The HTTP API answers 503 with `{"status":"queued"|"failed","reason":"window"|"network"}`.
 
 ## Configuration
 
@@ -270,6 +277,20 @@ Config file: `~/.weclaw/config.json`
   }
 }
 ```
+
+The window reminder can be tuned in the config (defaults shown; the whole block is optional):
+
+```json
+{
+  "reminder": {
+    "enabled": true,
+    "timezone": "Asia/Shanghai",
+    "quiet_hours": "23:00-08:00"
+  }
+}
+```
+
+Set `quiet_hours` to `"off"` to remind at night too.
 
 Environment variables:
 
@@ -430,7 +451,7 @@ Agents run locally with your own accounts and API keys. Your code never leaves t
 
 ### Can the agent message me first, e.g. when a long task finishes?
 
-Yes. Use `weclaw send` or the local HTTP API (see [Proactive Messages](#proactive-messages)). The WeChat context given to each session tells the agent how. WeChat only delivers bot-initiated messages for about 24 hours after you last wrote to the bot.
+Yes. Use `weclaw send` or the local HTTP API (see [Proactive Messages](#proactive-messages)). The WeChat context given to each session tells the agent how. WeChat only delivers bot-initiated messages for about 24 hours after you last wrote to the bot; anything refused waits in an outbox until your next message, and the bot reminds you before the window closes.
 
 ### How long does a WeChat chat session last?
 

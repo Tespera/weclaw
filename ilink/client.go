@@ -7,8 +7,10 @@ import (
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"time"
 )
@@ -17,6 +19,13 @@ const (
 	defaultBaseURL  = "https://ilinkai.weixin.qq.com"
 	longPollTimeout = 35 * time.Second
 	sendTimeout     = 15 * time.Second
+
+	// defaultRetryBudget bounds how long a send keeps retrying transport
+	// failures (DNS, reset, EOF, timeout, 5xx). Proxies on this machine drop
+	// for a few seconds at a time; callers such as notify give a send 60s.
+	defaultRetryBudget = 40 * time.Second
+	firstRetryDelay    = time.Second
+	maxRetryDelay      = 8 * time.Second
 )
 
 // Client is an iLink HTTP API client.
@@ -26,6 +35,9 @@ type Client struct {
 	botID      string
 	httpClient *http.Client
 	wechatUIN  string
+
+	retryBudget time.Duration
+	retryDelay  time.Duration
 }
 
 // NewClient creates a new iLink API client.
@@ -35,11 +47,13 @@ func NewClient(creds *Credentials) *Client {
 		baseURL = defaultBaseURL
 	}
 	return &Client{
-		baseURL:    baseURL,
-		botToken:   creds.BotToken,
-		botID:      creds.ILinkBotID,
-		httpClient: &http.Client{},
-		wechatUIN:  generateWechatUIN(),
+		baseURL:     baseURL,
+		botToken:    creds.BotToken,
+		botID:       creds.ILinkBotID,
+		httpClient:  &http.Client{},
+		wechatUIN:   generateWechatUIN(),
+		retryBudget: defaultRetryBudget,
+		retryDelay:  firstRetryDelay,
 	}
 }
 
@@ -74,16 +88,52 @@ func (c *Client) GetUpdates(ctx context.Context, buf string) (*GetUpdatesRespons
 	return &resp, nil
 }
 
-// SendMessage sends a message through iLink.
+// SendMessage sends a message through iLink, retrying transport failures.
+// The same client_id is reused across attempts.
 func (c *Client) SendMessage(ctx context.Context, msg *SendMessageRequest) (*SendMessageResponse, error) {
-	ctx, cancel := context.WithTimeout(ctx, sendTimeout)
-	defer cancel()
-
 	var resp SendMessageResponse
-	if err := c.doPost(ctx, "/ilink/bot/sendmessage", msg, &resp); err != nil {
+	if err := c.postWithRetry(ctx, "/ilink/bot/sendmessage", msg, &resp); err != nil {
 		return nil, err
 	}
 	return &resp, nil
+}
+
+// postWithRetry posts with a per-attempt timeout and retries transport
+// failures with backoff until the retry budget is spent.
+func (c *Client) postWithRetry(ctx context.Context, path string, body, result interface{}) error {
+	start := time.Now()
+	delay := c.retryDelay
+	if delay <= 0 {
+		delay = firstRetryDelay
+	}
+	for attempt := 1; ; attempt++ {
+		actx, cancel := context.WithTimeout(ctx, sendTimeout)
+		err := c.doPost(actx, path, body, result)
+		cancel()
+		if err == nil {
+			if attempt > 1 {
+				log.Printf("[ilink] %s succeeded on attempt %d", path, attempt)
+			}
+			return nil
+		}
+		var te *transportError
+		if !errors.As(err, &te) || ctx.Err() != nil {
+			return err
+		}
+		if time.Since(start)+delay > c.retryBudget {
+			return &NetworkError{Attempts: attempt, Err: err}
+		}
+		log.Printf("[ilink] %s attempt %d failed: %v; retrying in %s", path, attempt, err, delay)
+		select {
+		case <-time.After(delay):
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+		delay *= 2
+		if delay > maxRetryDelay {
+			delay = maxRetryDelay
+		}
+	}
 }
 
 // GetConfig fetches bot config for a user (includes typing_ticket).
@@ -128,11 +178,8 @@ func (c *Client) SendTyping(ctx context.Context, userID, typingTicket string, st
 
 // GetUploadURL gets a pre-signed CDN upload URL for media files.
 func (c *Client) GetUploadURL(ctx context.Context, req *GetUploadURLRequest) (*GetUploadURLResponse, error) {
-	ctx, cancel := context.WithTimeout(ctx, sendTimeout)
-	defer cancel()
-
 	var resp GetUploadURLResponse
-	if err := c.doPost(ctx, "/ilink/bot/getuploadurl", req, &resp); err != nil {
+	if err := c.postWithRetry(ctx, "/ilink/bot/getuploadurl", req, &resp); err != nil {
 		return nil, err
 	}
 	return &resp, nil
@@ -157,17 +204,21 @@ func (c *Client) doPost(ctx context.Context, path string, body interface{}, resu
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return err
+		return &transportError{err: err}
 	}
 	defer resp.Body.Close()
 
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return fmt.Errorf("read response: %w", err)
+		return &transportError{err: fmt.Errorf("read response: %w", err)}
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("HTTP %d: %s", resp.StatusCode, string(respBody))
+		err := fmt.Errorf("HTTP %d: %s", resp.StatusCode, string(respBody))
+		if resp.StatusCode >= 500 {
+			return &transportError{err: err}
+		}
+		return err
 	}
 
 	if err := json.Unmarshal(respBody, result); err != nil {

@@ -18,6 +18,9 @@ import (
 type Server struct {
 	clients []*ilink.Client
 	addr    string
+	// Store provides the users' latest context tokens and the outbox. Nil
+	// sends without a token and does not queue.
+	Store *messaging.Store
 }
 
 // NewServer creates an API server.
@@ -34,6 +37,7 @@ type SendRequest struct {
 	Text     string `json:"text,omitempty"`
 	Media    string `json:"media,omitempty"`     // image/video/file: URL or absolute local path
 	MediaURL string `json:"media_url,omitempty"` // deprecated alias of Media, kept for compatibility
+	NoQueue  bool   `json:"no_queue,omitempty"`  // do not keep undelivered messages for resend
 }
 
 // Run starts the HTTP server. Blocks until ctx is cancelled.
@@ -107,36 +111,32 @@ func (s *Server) handleSend(w http.ResponseWriter, r *http.Request) {
 
 	// Use the first client
 	client := s.clients[0]
-	ctx := r.Context()
-
-	// Send text if provided
-	if req.Text != "" {
-		if err := messaging.SendTextReply(ctx, client, req.To, req.Text, "", ""); err != nil {
-			log.Printf("[api] send text failed: %v", err)
-			http.Error(w, "send text failed: "+err.Error(), http.StatusInternalServerError)
-			return
-		}
-		log.Printf("[api] sent text to %s: %q", req.To, req.Text)
-
-		// Extract and send any markdown images embedded in text
-		for _, imgURL := range messaging.ExtractImageURLs(req.Text) {
-			if err := messaging.SendMediaFromURL(ctx, client, req.To, imgURL, ""); err != nil {
-				log.Printf("[api] send extracted image failed: %v", err)
-			} else {
-				log.Printf("[api] sent extracted image to %s: %s", req.To, imgURL)
-			}
-		}
+	out := messaging.Outgoing{Text: req.Text}
+	// Markdown images embedded in the text go out as media after it.
+	for _, imgURL := range messaging.ExtractImageURLs(req.Text) {
+		out.Media = append(out.Media, messaging.MediaRef{URL: imgURL})
 	}
-
-	// Send media if provided
 	if media != nil {
-		if err := messaging.SendMedia(ctx, client, req.To, *media, ""); err != nil {
-			log.Printf("[api] send media failed: %v", err)
-			http.Error(w, "send media failed: "+err.Error(), http.StatusInternalServerError)
+		out.Media = append(out.Media, *media)
+	}
+
+	d := messaging.NewDeliverer(client, s.Store)
+	if err := d.Deliver(r.Context(), req.To, out, !req.NoQueue, nil); err != nil {
+		log.Printf("[api] send to %s failed: %v", req.To, err)
+		if de, ok := messaging.IsDeliveryError(err); ok {
+			status := "failed"
+			if de.Queued {
+				status = "queued"
+			}
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusServiceUnavailable)
+			json.NewEncoder(w).Encode(map[string]string{"status": status, "reason": de.Reason, "message": de.Error()})
 			return
 		}
-		log.Printf("[api] sent media to %s: %s", req.To, media)
+		http.Error(w, "send failed: "+err.Error(), http.StatusInternalServerError)
+		return
 	}
+	log.Printf("[api] sent to %s: %q (+%d media)", req.To, req.Text, len(out.Media))
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})

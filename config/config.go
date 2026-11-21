@@ -14,6 +14,16 @@ type Config struct {
 	APIAddr      string                 `json:"api_addr,omitempty"`
 	SaveDir      string                 `json:"save_dir,omitempty"`
 	Agents       map[string]AgentConfig `json:"agents"`
+	Reminder     *ReminderConfig        `json:"reminder,omitempty"`
+}
+
+// ReminderConfig controls the message sent before WeChat's ~24h push window
+// closes. Omitted fields keep the defaults: enabled, Asia/Shanghai,
+// quiet hours 23:00-08:00.
+type ReminderConfig struct {
+	Enabled    *bool  `json:"enabled,omitempty"`
+	Timezone   string `json:"timezone,omitempty"`    // IANA name, e.g. "Asia/Shanghai"
+	QuietHours string `json:"quiet_hours,omitempty"` // "HH:MM-HH:MM"; "" keeps the default, "off" disables
 }
 
 // AgentConfig holds configuration for a single agent.

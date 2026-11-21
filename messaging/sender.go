@@ -71,7 +71,7 @@ func SendTextReply(ctx context.Context, client *ilink.Client, toUserID, text, co
 	}
 
 	if resp.Ret != 0 {
-		return fmt.Errorf("send message failed: ret=%d errmsg=%s", resp.Ret, resp.ErrMsg)
+		return &ilink.RetError{Op: "send message", Ret: resp.Ret, ErrMsg: resp.ErrMsg}
 	}
 
 	log.Printf("[sender] sent reply to %s: %q", toUserID, truncate(text, 50))

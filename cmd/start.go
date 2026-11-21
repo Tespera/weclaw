@@ -131,6 +131,17 @@ func runStart(cmd *cobra.Command, args []string) error {
 
 	handler.SetSaveCwd(config.SaveAgentCwd)
 
+	// Persistent peer state: context tokens for `weclaw send`, the outbox and
+	// window reminders.
+	store, err := messaging.DefaultStore()
+	if err != nil {
+		log.Printf("Warning: peer state unavailable (no outbox, no reminders): %v", err)
+		store = nil
+	} else {
+		handler.SetStore(store)
+	}
+	handler.SetReminder(reminderConfig(cfg.Reminder))
+
 	// Populate agent metas for /status
 	var metas []messaging.AgentMeta
 	workDirs := make(map[string]string, len(cfg.Agents))
@@ -190,6 +201,8 @@ func runStart(cmd *cobra.Command, args []string) error {
 	go messaging.NotifyInterrupted(ctx, interruptedFile(), clients, Version)
 
 	apiServer := api.NewServer(clients, apiAddr)
+	apiServer.Store = store
+	go handler.RunMaintenance(ctx, clients)
 	go func() {
 		if err := apiServer.Run(ctx); err != nil {
 			log.Printf("API server error: %v", err)
@@ -493,6 +506,40 @@ func wechatSessionContext(conversationID string) string {
 需要把本机文件（图片、文档、压缩包等任意类型）发给用户时，直接执行：
   %[2]s send --to %[1]q --media <本地路径>
 --media 可重复以一次发送多个文件，也可加 --text 附一句说明。不要为了发送文件临时启动 HTTP 服务或上传到外部网站。
+send 退出码 3（微信暂不允许推送）或 4（网络不通）时消息已进待发箱，会在用户下次发消息或网络恢复后自动补发，不要反复重发，如实告诉用户即可。
 用户消息里的 [旺柴]、[捂脸] 这类方括号文字是微信表情；但你的回复里写这种代码，微信只会原样显示成文字，不会变成表情。想用表情时改用 Unicode emoji（如 😄 🐶 👍）。
 用户从微信发来的文件、图片、视频会自动保存到 %[3]s 下（按日期分目录），并在用户下一条消息开头列出本地路径；用户说"刚发的文件/图片"时以那里为准，直接读取即可。`, conversationID, exe, messaging.InboxDir())
+}
+
+// reminderConfig turns the config file's reminder section into runtime
+// settings, falling back to the defaults for anything missing or invalid.
+func reminderConfig(rc *config.ReminderConfig) messaging.ReminderConfig {
+	out := messaging.DefaultReminderConfig()
+	if rc == nil {
+		return out
+	}
+	if rc.Enabled != nil {
+		out.Enabled = *rc.Enabled
+	}
+	if rc.Timezone != "" {
+		if loc, err := time.LoadLocation(rc.Timezone); err == nil {
+			out.Location = loc
+		} else {
+			log.Printf("Warning: reminder timezone %q: %v; using %s", rc.Timezone, err, out.Location)
+		}
+	}
+	switch rc.QuietHours {
+	case "":
+	case "off":
+		out.QuietStart, out.QuietEnd = 0, 0
+	default:
+		var sh, sm, eh, em int
+		if n, _ := fmt.Sscanf(rc.QuietHours, "%d:%d-%d:%d", &sh, &sm, &eh, &em); n == 4 &&
+			sh >= 0 && sh < 24 && eh >= 0 && eh < 24 && sm >= 0 && sm < 60 && em >= 0 && em < 60 {
+			out.QuietStart, out.QuietEnd = sh*60+sm, eh*60+em
+		} else {
+			log.Printf("Warning: reminder quiet_hours %q is not HH:MM-HH:MM; using the default", rc.QuietHours)
+		}
+	}
+	return out
 }

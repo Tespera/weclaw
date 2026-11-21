@@ -50,6 +50,10 @@ type Handler struct {
 	inboundMu sync.Mutex
 	inbound   map[string]*pendingInbound // userID -> files waiting for the next message
 
+	store    *Store         // persistent peer state + outbox; nil disables both
+	flushMu  sync.Mutex     // one outbox flush at a time, so nothing is resent twice
+	reminder ReminderConfig // window reminder settings
+
 	inflight      sync.WaitGroup // messages being handled
 	interruptedMu sync.Mutex
 	interrupted   []InterruptedReply // replies cut off by shutdown
@@ -323,6 +327,11 @@ func (h *Handler) HandleMessage(ctx context.Context, client *ilink.Client, msg i
 		go h.cleanSeenMsgs()
 	}
 
+	// Any finished user message reopens iLink's reply window: remember its
+	// token for later bot-initiated sends and deliver what was waiting.
+	prevPeer := h.recordInbound(client, msg)
+	h.flushOutbox(ctx, client, msg)
+
 	// Extract text from item list (text message or voice transcription)
 	text := extractText(msg)
 	if text == "" {
@@ -353,6 +362,15 @@ func (h *Handler) HandleMessage(ctx context.Context, client *ilink.Client, msg i
 
 	// Store context token for this user
 	h.contextTokens.Store(msg.FromUserID, msg.ContextToken)
+
+	// A short reply to the window reminder only renews the window.
+	if prevPeer.ReminderOutstanding() && isKeepaliveReply(text) {
+		log.Printf("[reminder] %s renewed the window", msg.FromUserID)
+		if err := SendTextReply(ctx, client, msg.FromUserID, keepaliveAck, msg.ContextToken, NewClientID()); err != nil {
+			log.Printf("[handler] failed to send reply to %s: %v", msg.FromUserID, err)
+		}
+		return
+	}
 
 	// Generate a clientID for this reply (used to correlate typing → finish)
 	clientID := NewClientID()
@@ -588,6 +606,7 @@ func (h *Handler) sendReplyWithMedia(ctx context.Context, client *ilink.Client, 
 
 	if err := SendTextReply(ctx, client, msg.FromUserID, reply, msg.ContextToken, clientID); err != nil {
 		log.Printf("[handler] failed to send reply to %s: %v", msg.FromUserID, err)
+		h.queueFailedReply(client, msg.FromUserID, reply, err)
 	}
 
 	for _, imgURL := range imageURLs {

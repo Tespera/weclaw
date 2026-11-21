@@ -68,7 +68,7 @@ func UploadFileToCDN(ctx context.Context, client *ilink.Client, data []byte, toU
 		return nil, fmt.Errorf("get upload URL: %w", err)
 	}
 	if uploadResp.Ret != 0 {
-		return nil, fmt.Errorf("get upload URL failed: ret=%d errmsg=%s", uploadResp.Ret, uploadResp.ErrMsg)
+		return nil, &ilink.RetError{Op: "get upload URL", Ret: uploadResp.Ret, ErrMsg: uploadResp.ErrMsg}
 	}
 
 	// Encrypt data with AES-128-ECB
