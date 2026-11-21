@@ -41,7 +41,8 @@ reached, the message is kept and resent automatically: on the user's next
 message, or once the network is back. Exit codes: 0 sent, 3 refused by
 WeChat (queued unless --no-queue), 4 network failure (queued unless
 --no-queue), 1 other errors.`,
-	SilenceUsage: true,
+	SilenceUsage:  true,
+	SilenceErrors: true, // Execute prints the error once
 	Example: `  weclaw send --to "user_id@im.wechat" --text "Hello"
   weclaw send --to "user_id@im.wechat" --media "https://example.com/image.png"
   weclaw send --to "user_id@im.wechat" --text "See this" --media "https://example.com/image.png"
