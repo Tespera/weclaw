@@ -94,11 +94,17 @@ func (rc ReminderConfig) ReminderDue(now time.Time, p Peer) bool {
 
 func (rc ReminderConfig) reminderText(now time.Time, p Peer) string {
 	expiry := p.LastInboundAt.Add(windowLength)
-	return fmt.Sprintf("提醒：微信只允许机器人在你上次发消息后 24 小时内主动推送，这个窗口约 %s后（%s）关闭。回我任意一个字（比如 1）就能续上，这条回复不会转给 AI。",
+	return fmt.Sprintf("提醒：微信只允许机器人在你上次发消息后 24 小时内主动推送，这个窗口约 %s后（%s）关闭。回我任意一个字（比如 1）就能续上，这条回复不会转给 AI；平时也可以随时发 /renew 续期。",
 		humanDuration(expiry.Sub(now)), expiry.In(rc.loc()).Format("01-02 15:04"))
 }
 
 const keepaliveAck = "已续上，接下来 24 小时内的通知都能正常推送。"
+
+// renewAck answers /renew with when the renewed window closes.
+func (h *Handler) renewAck(now time.Time) string {
+	return fmt.Sprintf("已续上，接下来 24 小时内（到 %s）的通知都能正常推送。",
+		now.Add(windowLength).In(h.reminder.loc()).Format("01-02 15:04"))
+}
 
 // isKeepaliveReply reports whether text looks like a reply to the reminder
 // rather than a request for the agent.

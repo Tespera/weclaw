@@ -133,6 +133,7 @@ Send these as WeChat messages:
 | `/cwd /path/to/project` | Switch workspace: applies to all agents, saved to config, starts a new session |
 | `/cwd` | Show the current workspace |
 | `/new` | Start a new conversation (clear the session) |
+| `/renew` | Renew WeChat's 24-hour push window without asking the agent |
 | `/new look at this error` | Start a new conversation and send this message to it |
 | `/info` | Show current agent info (including workspace) |
 | `/help` | Show help |
@@ -242,7 +243,7 @@ What weclaw does about it:
 
 - **Context token**: the bridge stores the context token from each of your messages in `~/.weclaw/state/`, and `weclaw send` and the HTTP API send with it; if WeChat refuses, they try once more without it.
 - **Outbox**: messages WeChat refuses, or that cannot reach the WeChat server (after about 40 seconds of automatic retries), are kept instead of lost. They are resent before your next message to the bot is handled (texts merged into one message), and also once the network is back if the window is still open. Items older than 7 days are dropped. Disable with `--no-queue` (`"no_queue": true` in the API).
-- **Window reminder**: about 4 hours before the window closes, the bot asks you to reply; if that falls in quiet hours (default 23:00–08:00) it is sent at 22:30 the evening before. While a reminder is outstanding, a reply of up to 4 characters only renews the window and is not passed to the agent.
+- **Window reminder**: about 4 hours before the window closes, the bot asks you to reply; if that falls in quiet hours (default 23:00–08:00) it is sent at 22:30 the evening before. While a reminder is outstanding, a reply of up to 4 characters only renews the window and is not passed to the agent. Send `/renew` at any time to renew it by hand, also without asking the agent.
 - **Exit codes**: `weclaw send` exits 0 on success, 3 when WeChat refuses and 4 on network failure (both queued by default; the message says why and how long since your last message), 1 on other errors. The HTTP API answers 503 with `{"status":"queued"|"failed","reason":"window"|"network"}`.
 
 ## Configuration

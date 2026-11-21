@@ -203,3 +203,24 @@ func TestMaintainFlushesOutboxWhileWindowOpen(t *testing.T) {
 		t.Fatalf("sent %q", texts)
 	}
 }
+
+func TestRenewCommandRenewsWithoutAgent(t *testing.T) {
+	fi := newRecordingILink(t)
+	client := ilink.NewClient(&ilink.Credentials{BotToken: "t", ILinkBotID: testBot, BaseURL: fi.srv.URL})
+	st := NewStore(t.TempDir())
+	st.RecordInbound(testBot, testUser, "old", time.Now().Add(-3*time.Hour)) // no reminder outstanding
+
+	h := &Handler{agents: make(map[string]agent.Agent)}
+	h.SetStore(st)
+	h.SetReminder(DefaultReminderConfig())
+	h.HandleMessage(context.Background(), client, textMsg(" /renew ", "fresh"))
+
+	texts := fi.sentTexts()
+	if len(texts) != 1 || !strings.HasPrefix(texts[0], "已续上") || !strings.Contains(texts[0], "24 小时") {
+		t.Fatalf("sent %q, want only the renew ack", texts)
+	}
+	p, _ := st.Peer(testBot, testUser)
+	if p.ContextToken != "fresh" {
+		t.Fatalf("token not renewed: %+v", p)
+	}
+}

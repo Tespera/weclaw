@@ -48,7 +48,7 @@ type AgentConfig struct {
 func BuildAliasMap(agents map[string]AgentConfig) map[string]string {
 	// Built-in commands that cannot be overridden
 	reserved := map[string]bool{
-		"info": true, "help": true, "new": true, "clear": true, "cwd": true,
+		"info": true, "help": true, "new": true, "clear": true, "cwd": true, "renew": true,
 	}
 
 	m := make(map[string]string)

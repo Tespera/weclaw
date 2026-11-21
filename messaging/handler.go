@@ -397,7 +397,14 @@ func (h *Handler) HandleMessage(ctx context.Context, client *ilink.Client, msg i
 	}
 
 	// Built-in commands (no typing needed)
-	if trimmed == "/info" {
+	if trimmed == "/renew" {
+		// Recording the inbound message above already renewed the window.
+		log.Printf("[reminder] %s renewed the window with /renew", msg.FromUserID)
+		if err := SendTextReply(ctx, client, msg.FromUserID, h.renewAck(time.Now()), msg.ContextToken, clientID); err != nil {
+			log.Printf("[handler] failed to send reply to %s: %v", msg.FromUserID, err)
+		}
+		return
+	} else if trimmed == "/info" {
 		reply := h.buildStatus()
 		if err := SendTextReply(ctx, client, msg.FromUserID, reply, msg.ContextToken, clientID); err != nil {
 			log.Printf("[handler] failed to send reply to %s: %v", msg.FromUserID, err)
@@ -908,6 +915,7 @@ func buildHelpText() string {
 /new or /clear - Start a new session
 /new msg - Start a new session and send msg to it
 /cwd /path - Switch workspace directory
+/renew - Renew WeChat's 24h push window without asking the agent
 /info - Show current agent info
 /help - Show this help message
 
